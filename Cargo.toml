@@ -16,6 +16,7 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
     "Win32_System_Threading",
     "Win32_Storage_Xps",
+    "Win32_Media_Audio",
 ] }
 
 # 并发
@@ -31,6 +32,9 @@ env_logger = "0.11"
 
 # 系统托盘
 tray-icon = "0.19"
+
+# 音频采集（语音控制）
+cpal = "0.15"
 
 [build-dependencies]
 winres = "0.1"
