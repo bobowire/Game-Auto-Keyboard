@@ -2,7 +2,8 @@
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
+# 注意：二进制项目应提交 Cargo.lock 以锁定依赖版本
+# （rustpotter 依赖 candle 对 half 版本敏感，锁定避免漂移导致编译失败）
 
 # IDE
 .vscode/

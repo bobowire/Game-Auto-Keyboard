@@ -5,6 +5,8 @@
 
 pub mod ring_buffer;
 pub mod capture;
+pub mod wakeword;
 
 pub use ring_buffer::AudioRingBuffer;
 pub use capture::{AudioCapture, TARGET_SAMPLE_RATE};
+pub use wakeword::{WakewordDetector, train_wakeword};
