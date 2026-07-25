@@ -228,11 +228,23 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_select_ignored() {
+    fn duplicate_select_toggles_off_and_stops() {
         let mut sm = HotkeyStateMachine::new();
-        sm.on_select(1);
-        sm.on_select(1);
-        assert_eq!(sm.on_start(), HotkeyAction::StartWindows(vec![1]));
+        // 首次选中 1，无动作
+        assert_eq!(sm.on_select(1), None);
+        // 再次按 1，触发停止并移出选择集
+        assert_eq!(sm.on_select(1), Some(HotkeyAction::StopWindows(vec![1])));
+        // 选择集已空，on_start 应作用于全部
+        assert_eq!(sm.on_start(), HotkeyAction::StartAll);
+    }
+
+    #[test]
+    fn select_returns_none_first_time() {
+        let mut sm = HotkeyStateMachine::new();
+        assert_eq!(sm.on_select(2), None);
+        assert_eq!(sm.on_select(3), None);
+        // 两个都在选择集中
+        assert_eq!(sm.on_start(), HotkeyAction::StartWindows(vec![2, 3]));
     }
 
     #[test]

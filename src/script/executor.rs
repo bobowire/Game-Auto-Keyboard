@@ -2,21 +2,31 @@
 
 use crate::script::ast::*;
 use crate::input::{InputBackend, MouseButton as InputBtn};
+use crate::capture::{CaptureBackend, PrintWindowCapture, color_exists_in_area};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+/// find_color 颜色匹配的默认容差（每通道 ±10）
+const COLOR_TOLERANCE: u8 = 10;
+
 pub struct ScriptExecutor<'a> {
     input: &'a dyn InputBackend,
     hwnd: HWND,
     stop_flag: Option<&'a AtomicBool>,
+    capture: Box<dyn CaptureBackend>,
 }
 
 impl<'a> ScriptExecutor<'a> {
     pub fn new(input: &'a dyn InputBackend, hwnd: HWND) -> Self {
-        Self { input, hwnd, stop_flag: None }
+        Self {
+            input,
+            hwnd,
+            stop_flag: None,
+            capture: Box::new(PrintWindowCapture::new()),
+        }
     }
 
     /// 一次性执行所有命令（无中断）
@@ -37,6 +47,7 @@ impl<'a> ScriptExecutor<'a> {
             input: self.input,
             hwnd: self.hwnd,
             stop_flag: Some(stop_flag),
+            capture: Box::new(PrintWindowCapture::new()),
         };
         for cmd in commands {
             if stop_flag.load(Ordering::Relaxed) {
@@ -183,16 +194,43 @@ impl<'a> ScriptExecutor<'a> {
         })
     }
 
-    /// 求值为布尔（颜色查找目前是占位，固定返回 false）
+    /// 求值为布尔
     fn eval_value(&self, value: &Value) -> Result<bool, String> {
         match value {
             Value::Bool(b) => Ok(*b),
-            Value::FindColor { area, color } => {
-                println!("  [条件] find_color area={:?} color=#{:06x} (暂未实现，返回 false)", area, color);
-                // TODO: 阶段5 实现截图找色
-                Ok(false)
-            }
+            Value::FindColor { area, color } => self.eval_find_color(area, *color),
         }
+    }
+
+    /// 执行颜色查找：截图 → 计算区域 → 逐像素匹配
+    fn eval_find_color(&self, area: &FindArea, color: u32) -> Result<bool, String> {
+        // 截取窗口客户区
+        let bitmap = self.capture.capture(self.hwnd)?;
+
+        // 把 FindArea 转成位图内的绝对矩形 (x, y, w, h)
+        let (x, y, w, h) = self.resolve_find_area(area)?;
+
+        let found = color_exists_in_area(&bitmap, x, y, w, h, color, COLOR_TOLERANCE);
+        println!(
+            "  [条件] find_color 区域({},{},{},{}) 颜色#{:06x} => {}",
+            x, y, w, h, color, found
+        );
+        Ok(found)
+    }
+
+    /// 将 FindArea 的三种定位方式转换为位图内的绝对矩形
+    fn resolve_find_area(&self, area: &FindArea) -> Result<(i32, i32, i32, i32), String> {
+        Ok(match area {
+            FindArea::Absolute { x, y, w, h } => (*x, *y, *w, *h),
+            FindArea::Center { dx, dy, w, h } => {
+                let (cw, ch) = self.client_size()?;
+                (cw / 2 + dx, ch / 2 + dy, *w, *h)
+            }
+            FindArea::Percent { px, py, w, h } => {
+                let (cw, ch) = self.client_size()?;
+                (cw * px / 100, ch * py / 100, *w, *h)
+            }
+        })
     }
 }
 

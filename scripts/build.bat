@@ -40,7 +40,8 @@ echo   [3] Run main       (cargo run)
 echo   [4] Run tests      (cargo test)
 echo   [5] Run example    (simple_test - PostMessage test)
 echo   [6] Run example    (script_test - Script engine test)
-echo   [7] Clean          (cargo clean)
+echo   [7] Run example    (capture_test - Screenshot color test)
+echo   [8] Clean          (cargo clean)
 echo   [0] Exit
 echo.
 set /p choice=Enter option number:
@@ -50,7 +51,8 @@ if "%choice%"=="3" goto RUN
 if "%choice%"=="4" goto TEST
 if "%choice%"=="5" goto EXAMPLE_SIMPLE
 if "%choice%"=="6" goto EXAMPLE_SCRIPT
-if "%choice%"=="7" goto CLEAN
+if "%choice%"=="7" goto EXAMPLE_CAPTURE
+if "%choice%"=="8" goto CLEAN
 if "%choice%"=="0" exit /b 0
 echo Invalid option
 goto MENU
@@ -99,6 +101,15 @@ echo ----------------------------------------
 echo TIP: After start, click target window within 5 seconds (e.g. Notepad)
 echo.
 cargo run --example script_test
+goto DONE
+
+:EXAMPLE_CAPTURE
+echo.
+echo [Run Example] cargo run --example capture_test
+echo ----------------------------------------
+echo TIP: After start, click target window within 5 seconds
+echo.
+cargo run --example capture_test
 goto DONE
 
 :CLEAN

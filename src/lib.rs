@@ -1,5 +1,6 @@
 pub mod input;
 pub mod script;
+pub mod capture;
 pub mod utils;
 pub mod runner;
 pub mod hotkey;

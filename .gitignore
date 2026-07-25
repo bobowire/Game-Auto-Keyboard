@@ -23,3 +23,6 @@ Desktop.ini
 *.dll
 *.so
 *.dylib
+
+# 测试生成的截图
+*.ppm

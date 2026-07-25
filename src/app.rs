@@ -149,7 +149,8 @@ impl App {
         self.run_slot(idx, false, 0)
     }
 
-    /// 单次执行某槽位标识方案
+    /// 单次执行某槽位标识方案（预留给 UI 单次执行按钮）
+    #[allow(dead_code)]
     fn run_slot_once(&mut self, idx: usize) -> bool {
         self.run_slot(idx, true, 0)
     }
