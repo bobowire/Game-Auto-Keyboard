@@ -43,6 +43,7 @@ echo   [6] Run example    (script_test - Script engine test)
 echo   [7] Run example    (capture_test - Screenshot color test)
 echo   [8] Run example    (audio_test - Microphone capture test)
 echo   [a] Run example    (wakeword_test - Wakeword train/detect test)
+echo   [b] Run example    (asr_test - Baidu ASR test)
 echo   [9] Clean          (cargo clean)
 echo   [0] Exit
 echo.
@@ -56,6 +57,7 @@ if "%choice%"=="6" goto EXAMPLE_SCRIPT
 if "%choice%"=="7" goto EXAMPLE_CAPTURE
 if "%choice%"=="8" goto EXAMPLE_AUDIO
 if /i "%choice%"=="a" goto EXAMPLE_WAKEWORD
+if /i "%choice%"=="b" goto EXAMPLE_ASR
 if "%choice%"=="9" goto CLEAN
 if "%choice%"=="0" exit /b 0
 echo Invalid option
@@ -132,6 +134,15 @@ echo ----------------------------------------
 echo TIP: Follow prompts to record "xiao zhu shou" then test detection.
 echo.
 cargo run --example wakeword_test
+goto DONE
+
+:EXAMPLE_ASR
+echo.
+echo [Run Example] cargo run --example asr_test
+echo ----------------------------------------
+echo TIP: Test Baidu ASR with command_1.wav (need API key in config).
+echo.
+cargo run --example asr_test
 goto DONE
 
 :CLEAN

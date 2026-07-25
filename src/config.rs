@@ -25,12 +25,27 @@ pub struct AppConfig {
     /// 8 个槽位的配置
     #[serde(default)]
     pub slots: Vec<SlotConfig>,
+    /// 百度语音识别配置
+    #[serde(default)]
+    pub baidu: BaiduConfig,
+}
+
+/// 百度语音识别 API 配置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BaiduConfig {
+    /// API Key（在百度智能云控制台申请）
+    #[serde(default)]
+    pub api_key: String,
+    /// Secret Key
+    #[serde(default)]
+    pub secret_key: String,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             slots: vec![SlotConfig::default(); 8],
+            baidu: BaiduConfig::default(),
         }
     }
 }

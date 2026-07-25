@@ -37,6 +37,8 @@ tray-icon = "0.19"
 cpal = "0.15"
 rustpotter = "3.0.2"
 webrtc-vad = "0.4.0"
+ureq = { version = "2", features = ["json"] }
+base64 = "0.22"
 
 [build-dependencies]
 winres = "0.1"
