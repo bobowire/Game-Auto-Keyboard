@@ -7,6 +7,7 @@ pub mod hotkey;
 pub mod window_slot;
 pub mod config;
 pub mod tray;
+pub mod color_picker;
 pub mod app;
 
 // 重新导出常用类型

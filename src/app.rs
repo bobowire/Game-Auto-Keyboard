@@ -1,5 +1,6 @@
 // egui 主应用 - 多窗口 + 方案标识 + 热键
 
+use crate::color_picker::ColorPicker;
 use crate::config::AppConfig;
 use crate::hotkey::{HotkeyAction, HotkeyKey, HotkeyManager, HotkeyStateMachine};
 use crate::runner::Runner;
@@ -38,6 +39,11 @@ pub struct App {
 
     // 是否显示热键说明窗口
     show_hotkey_help: bool,
+
+    // 取色器
+    color_picker: ColorPicker,
+    // 取色倒计时起点（用于抓取前台窗口后打开取色器）
+    picking_since: Option<Instant>,
 
     // 热键
     hotkey_mgr: Option<HotkeyManager>,
@@ -112,6 +118,8 @@ impl App {
             viewing_script: None,
             adding_scheme_for: None,
             show_hotkey_help: false,
+            color_picker: ColorPicker::default(),
+            picking_since: None,
             hotkey_mgr,
             hotkey_sm: HotkeyStateMachine::new(),
             tray,
@@ -412,6 +420,32 @@ impl App {
         }
     }
 
+    /// 处理取色倒计时：结束后截取前台窗口并打开取色器
+    fn handle_picking(&mut self) {
+        let Some(since) = self.picking_since else { return };
+        let elapsed = since.elapsed().as_secs();
+
+        if elapsed >= GRAB_COUNTDOWN_SECS {
+            self.picking_since = None;
+            if let Some(hwnd) = win32::foreground_window() {
+                if win32::is_own_window(hwnd) {
+                    self.status = "取色失败：请切换到目标窗口，不能取色本程序自己".to_string();
+                    return;
+                }
+                match self.color_picker.capture_and_open(hwnd) {
+                    Ok(_) => self.status = "取色器已打开".to_string(),
+                    Err(e) => self.status = format!("取色失败: {}", e),
+                }
+            } else {
+                self.status = "取色失败：未找到前台窗口".to_string();
+            }
+        } else {
+            // 实时更新倒计时
+            let remaining = GRAB_COUNTDOWN_SECS - elapsed;
+            self.status = format!("🎨 取色：{} 秒后截图，请切换到目标窗口...", remaining);
+        }
+    }
+
     /// 定期检查已绑定窗口是否仍有效，失效则停止运行、清除绑定并提示
     fn check_window_validity(&mut self) {
         // 每 1 秒检查一次
@@ -445,6 +479,7 @@ impl eframe::App for App {
         self.process_hotkeys();
         self.process_tray(ctx);
         self.handle_grabbing();
+        self.handle_picking();
         self.check_window_validity();
 
         // 拦截关闭：点 X 时隐藏到托盘而非退出
@@ -465,6 +500,7 @@ impl eframe::App for App {
         self.ui_source_panel(ctx);
         self.ui_add_scheme_window(ctx);
         self.ui_hotkey_help_window(ctx);
+        self.color_picker.ui(ctx);
         self.ui_central(ctx);
     }
 }
@@ -474,6 +510,17 @@ impl App {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
+                // 取色倒计时提示（醒目）
+                if let Some(since) = self.picking_since {
+                    let elapsed = since.elapsed().as_secs();
+                    let remaining = GRAB_COUNTDOWN_SECS.saturating_sub(elapsed);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0, 200, 255),
+                        format!("🎨 取色倒计时: {} 秒（请切换到目标窗口）", remaining),
+                    );
+                    ui.separator();
+                }
+
                 // 发送模式提示
                 if self.hotkey_sm.in_send_mode() {
                     ui.colored_label(
@@ -737,6 +784,7 @@ impl App {
         let mut act_reload = false;
         let mut act_start_all = false;
         let mut act_stop_all = false;
+        let mut act_pick = false;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // 顶部工具行
@@ -744,6 +792,9 @@ impl App {
                 ui.heading("窗口方案管理");
                 if ui.button("🔄 重载脚本").clicked() {
                     act_reload = true;
+                }
+                if ui.button("🎨 取色").clicked() {
+                    act_pick = true;
                 }
                 if ui.button("❓ 热键说明").clicked() {
                     self.show_hotkey_help = true;
@@ -783,6 +834,10 @@ impl App {
         // 统一处理动作
         if act_reload {
             self.reload_scripts();
+        }
+        if act_pick {
+            self.picking_since = Some(Instant::now());
+            self.status = "取色：3 秒内切换到目标窗口...".to_string();
         }
         if act_start_all {
             self.start_all();

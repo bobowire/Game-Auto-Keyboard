@@ -32,6 +32,8 @@ impl CaptureBackend for PrintWindowCapture {
     }
 }
 
+/// PW_CLIENTONLY = 0x00000001，只捕获客户区（不含标题栏/边框），与 GetClientRect 尺寸对齐
+const PW_CLIENTONLY: u32 = 0x00000001;
 /// PW_RENDERFULLCONTENT = 0x00000002，可捕获 DirectComposition/部分 GPU 渲染内容
 const PW_RENDERFULLCONTENT: u32 = 0x00000002;
 
@@ -67,7 +69,9 @@ fn capture_impl(hwnd: HWND) -> Result<Bitmap, String> {
         let old_obj = SelectObject(mem_dc, HGDIOBJ(hbitmap.0));
 
         // 3. 截图：优先 PrintWindow，失败则回退 BitBlt
-        let pw_ok = PrintWindow(hwnd, mem_dc, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)).as_bool();
+        // PW_CLIENTONLY 只渲染客户区，与 GetClientRect 尺寸一致（避免标题栏偏移）
+        let flags = PW_CLIENTONLY | PW_RENDERFULLCONTENT;
+        let pw_ok = PrintWindow(hwnd, mem_dc, PRINT_WINDOW_FLAGS(flags)).as_bool();
         if !pw_ok {
             // 回退：直接从窗口 DC 拷贝（仅前台可见时有效）
             let _ = BitBlt(mem_dc, 0, 0, width, height, window_dc, 0, 0, SRCCOPY);
