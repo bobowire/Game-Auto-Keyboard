@@ -6,7 +6,8 @@
 //   3. 进入检测模式，喊"小助手"看能否触发，显示 score 和延迟
 
 use game_auto_keyboard::voice::{
-    train_wakeword, AudioCapture, WakewordDetector, TARGET_SAMPLE_RATE,
+    trim_silence, train_wakeword, AudioCapture, AudioRingBuffer, CommandRecorder, RecordState,
+    WakewordDetector, TARGET_SAMPLE_RATE,
 };
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -49,10 +50,19 @@ fn main() {
 
         println!("  🔴 录音中（{:.1}秒）...", RECORD_SECS);
         let samples = record(&capture, RECORD_SECS);
+
+        // 裁剪首尾静音，只保留"小助手"词本身（避免连读时无法唤醒）
+        let sr = TARGET_SAMPLE_RATE as usize;
+        let trimmed = trim_silence(&samples, sr, 20, 300.0, 80);
+
         let path = format!("wakeword_samples/sample_{}.wav", i);
-        write_wav(&path, &samples).expect("写入 wav 失败");
+        write_wav(&path, &trimmed).expect("写入 wav 失败");
         sample_paths.push(path);
-        println!("  ✓ 已保存（{} 样本）", samples.len());
+        println!(
+            "  ✓ 已保存（原始 {} → 裁剪后 {} 样本）",
+            samples.len(),
+            trimmed.len()
+        );
     }
 
     // === 阶段2：训练 ===
@@ -66,9 +76,11 @@ fn main() {
         }
     }
 
-    // === 阶段3：检测 ===
+    // === 阶段3：完整状态机（待命→唤醒→VAD录音→输出指令音频） ===
     println!();
-    println!("【阶段3】检测模式 - 喊\"小助手\"试试（Ctrl+C 退出）");
+    println!("【阶段3】完整流程测试（Ctrl+C 退出）");
+    println!("  说\"小助手\"唤醒，然后说一句指令，静音后自动结束");
+    println!("  指令音频会存成 command_N.wav，可播放验证是否完整");
     println!();
 
     let mut detector = match WakewordDetector::from_model_file(MODEL_PATH, DETECT_THRESHOLD) {
@@ -79,26 +91,94 @@ fn main() {
         }
     };
 
+    // 3秒环形缓冲，用于唤醒后回溯取指令起点
+    let mut ring = AudioRingBuffer::new(TARGET_SAMPLE_RATE as usize, 3);
+    let mut state = VoiceState::Idle;
+    let mut cmd_count = 0;
+
     capture.poll(); // 清空
-    let mut detect_count = 0;
 
     loop {
         let frame = capture.poll();
-        if !frame.is_empty() {
-            if let Some(score) = detector.process(&frame) {
-                detect_count += 1;
-                println!(
-                    "  🎯 检测到唤醒词！score={:.3}  (第 {} 次)",
-                    score, detect_count
-                );
-                detector.reset();
-                // 短暂冷却，避免连续触发
-                thread::sleep(Duration::from_millis(500));
-                capture.poll();
+        if frame.is_empty() {
+            thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        ring.push(&frame);
+
+        match &mut state {
+            VoiceState::Idle => {
+                if let Some(score) = detector.process(&frame) {
+                    println!("  🎯 唤醒！score={:.3}，开始听指令...", score);
+                    detector.reset();
+
+                    // 从环形缓冲回溯 2 秒，补回唤醒时已说出的指令开头
+                    // （连读时"小助手"之后的指令部分已在缓冲里，需要取回；
+                    //   含唤醒词本身也没关系，ASR 阶段再 strip 掉前缀）
+                    let mut recorder = CommandRecorder::new();
+                    let backfill = ring.take_recent(2000);
+                    recorder.prefill(&backfill);
+
+                    state = VoiceState::Listening {
+                        recorder,
+                        started: Instant::now(),
+                    };
+                }
+            }
+            VoiceState::Listening { recorder, started } => {
+                let elapsed = started.elapsed();
+
+                // 超时控制：3秒没说话 / 最长8秒
+                let no_speech_timeout =
+                    !recorder.speech_started() && elapsed > Duration::from_secs(3);
+                let max_timeout = elapsed > Duration::from_secs(8);
+
+                let done_audio = match recorder.process(&frame) {
+                    RecordState::Done(audio) => Some(audio),
+                    RecordState::Recording => {
+                        if no_speech_timeout {
+                            println!("  ⏱ 超时（3秒无语音），回到待命");
+                            None // 下面统一处理，用空音频表示放弃
+                        } else if max_timeout {
+                            println!("  ⏱ 达到最长8秒，强制结束");
+                            Some(recorder.finish())
+                        } else {
+                            continue;
+                        }
+                    }
+                };
+
+                match done_audio {
+                    Some(audio) if !audio.is_empty() => {
+                        cmd_count += 1;
+                        let secs = audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
+                        let path = format!("command_{}.wav", cmd_count);
+                        write_wav(&path, &audio).ok();
+                        println!(
+                            "  ✓ 指令录制完成: {:.2}秒，已存 {}（可播放验证）",
+                            secs, path
+                        );
+                        state = VoiceState::Idle;
+                    }
+                    _ => {
+                        // 超时无语音，放弃
+                        state = VoiceState::Idle;
+                    }
+                }
             }
         }
-        thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// 语音状态机
+enum VoiceState {
+    /// 待命：监听唤醒词
+    Idle,
+    /// 已唤醒：录制指令
+    Listening {
+        recorder: CommandRecorder,
+        started: Instant,
+    },
 }
 
 /// 录制指定秒数的音频

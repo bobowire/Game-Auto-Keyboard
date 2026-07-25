@@ -36,6 +36,7 @@ tray-icon = "0.19"
 # 音频采集（语音控制）
 cpal = "0.15"
 rustpotter = "3.0.2"
+webrtc-vad = "0.4.0"
 
 [build-dependencies]
 winres = "0.1"
