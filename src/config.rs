@@ -1,0 +1,100 @@
+// 配置持久化 - 只存方案绑定意图，不存运行时状态（HWND 等）
+//
+// 重启后：方案配置自动恢复，脚本命令按文件名从当前脚本池重新加载
+// （以磁盘最新内容为准），窗口需用户手动重新抓取。
+
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+const CONFIG_PATH: &str = "config/config.json";
+
+/// 单个槽位的持久化配置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SlotConfig {
+    /// 该槽位绑定的方案脚本文件名列表（顺序即显示顺序）
+    #[serde(default)]
+    pub scheme_names: Vec<String>,
+    /// 标识方案在 scheme_names 中的索引
+    #[serde(default)]
+    pub marked: Option<usize>,
+}
+
+/// 应用配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    /// 8 个槽位的配置
+    #[serde(default)]
+    pub slots: Vec<SlotConfig>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            slots: vec![SlotConfig::default(); 8],
+        }
+    }
+}
+
+impl AppConfig {
+    /// 从默认路径加载；文件不存在或损坏时返回默认配置
+    pub fn load() -> Self {
+        Self::load_from(Path::new(CONFIG_PATH))
+    }
+
+    pub fn load_from(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(content) => match serde_json::from_str::<AppConfig>(&content) {
+                Ok(mut cfg) => {
+                    cfg.normalize();
+                    cfg
+                }
+                Err(e) => {
+                    eprintln!("配置解析失败，使用默认配置: {}", e);
+                    AppConfig::default()
+                }
+            },
+            Err(_) => AppConfig::default(),
+        }
+    }
+
+    /// 保存到默认路径
+    pub fn save(&self) -> Result<(), String> {
+        self.save_to(Path::new(CONFIG_PATH))
+    }
+
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
+        // 确保父目录存在
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建配置目录失败: {}", e))?;
+        }
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("序列化配置失败: {}", e))?;
+        std::fs::write(path, json)
+            .map_err(|e| format!("写入配置失败: {}", e))?;
+        Ok(())
+    }
+
+    /// 保证 slots 长度恰好为 8，修正越界的 marked
+    fn normalize(&mut self) {
+        self.slots.resize(8, SlotConfig::default());
+        for slot in &mut self.slots {
+            if let Some(m) = slot.marked {
+                if m >= slot.scheme_names.len() {
+                    slot.marked = if slot.scheme_names.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                }
+            } else if !slot.scheme_names.is_empty() {
+                slot.marked = Some(0);
+            }
+        }
+    }
+
+    /// 便捷：返回配置文件路径
+    pub fn path() -> PathBuf {
+        PathBuf::from(CONFIG_PATH)
+    }
+}

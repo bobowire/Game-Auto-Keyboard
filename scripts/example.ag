@@ -1,0 +1,38 @@
+// ============================================
+//  示例脚本 - 展示所有支持的语法
+// ============================================
+
+// ---- 键盘命令 ----
+down(1)                 // 按下键盘 1
+delay_ms(500)           // 延迟 500ms
+up(1)                   // 弹起键盘 1
+click(2)                // 点击键盘 2（按下+立即弹起）
+click_ms(3,50)          // 点击键盘 3（按下+间隔50ms+弹起）
+
+// ---- 鼠标命令 ----
+mouse_move(100,200)               // 鼠标移动到窗口中的（100,200）位置
+mouse_down(left,100,200)          // 左键在窗口坐标(100,200)按下
+mouse_up(left)                    // 左键弹起
+mouse_click(left,100,200)         // 左键在窗口坐标(100,200)单击
+mouse_move_center(100,200)        // 鼠标移动到中心点偏移(100,200)位置
+mouse_down_center(left,100,200)   // 左键在中心点偏移(100,200)按下
+mouse_click_center(left,100,200)  // 左键在中心点偏移(100,200)单击
+mouse_move_percent(50,60)       // 鼠标移动到宽度50%、高度60%位置
+mouse_down_percent(left,50,60)    // 左键在宽度50%、高度60%位置按下
+mouse_click_percent(left,50,60)   // 左键在宽度50%、高度60%位置单击
+
+// 扩展命令
+send_window_active()              // 模拟发送窗口激活消息
+
+// ---- 条件判断 ----
+// find_color(x, y, 宽, 高, 颜色) 在指定区域查找颜色，返回 true/false
+if_start[find_color(100,200,10,20,#ff00ff) == true]
+    delay_ms(500)
+else_if[find_color(200,200,10,20,#ff00ff) != true]
+    delay_ms(500)
+else_if[find_color(100,200,10,20,#ff00ff) != find_color(200,200,10,20,#ff00ff)]
+    // 支持嵌套 if
+    if_start[find_color(300,200,10,20,#ff00ff) == true]
+        delay_ms(500)
+    if_end
+if_end

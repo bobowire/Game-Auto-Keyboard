@@ -1,0 +1,25 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 用户配置和状态文件
+config.toml
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# 构建产物
+*.exe
+*.dll
+*.so
+*.dylib

@@ -1,0 +1,4 @@
+// 测试脚本：向窗口输入 "Hello"
+send_window_active()
+delay_ms(100)
+click(r)

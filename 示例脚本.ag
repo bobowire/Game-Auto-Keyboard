@@ -1,0 +1,52 @@
+键盘鼠标方法：
+// 模拟发送窗口激活消息
+send_window_active()              
+// 按下键盘1
+down(1)
+// 延迟500ms
+delay_ms(500)
+// 弹起键盘1
+up(1)
+// 点击键盘2，无延迟
+click(2)
+// 点击键盘2，按下后间隔50ms再弹起
+click_ms(2,50)
+// 鼠标左键在窗口坐标100,200的位置按下
+mouse_down(left,100,200)
+// 鼠标左键在窗口坐标100,200的位置单击
+mouse_click(left,100,200)
+// 鼠标左键在窗口中心点偏移100,200的位置按下
+mouse_down_center(left,100,200)
+// 鼠标左键在窗口中心点偏移100,200的位置单击
+mouse_click_center(left,100,200)
+// 鼠标左键在窗口宽度50%和高度60%的位置按下
+mouse_down_percent(left,50,60)
+// 鼠标左键在窗口宽度50%和高度60%的位置单击
+mouse_click_percent(left,50,60)
+// 鼠标左键弹起
+mouse_up(left)
+
+
+颜色图像查找方法：
+// 在窗口100,200坐标位置且宽度为10高度为20的指定区域查找颜色，返回true/false
+find_color(100,200,10,20,#ff00ff)
+// 在窗口中心点指定偏移区域查找颜色，返回true/false
+find_color_center(100,100,10,10,#ff00ff)
+// 在左上角坐标以窗口宽度50%和高度60%点区域，宽度20高度10的区域查找指定颜色
+find_color(50,60,20,10,#ff00ff)
+
+条件判断：
+if_start[]
+else_if[]
+if_end
+
+条件判断示例：
+if_start[find_color(100,200,10,20,#ff00ff) == true]
+    delay_ms(500)
+else_if[find_color(200,200,10,20,#ff00ff) != true]
+    delay_ms(500)
+else_if[find_color(100,200,10,20,#ff00ff) != find_color(200,200,10,20,#ff00ff)]
+    if_start[find_color(300,200,10,20,#ff00ff) == true]
+        delay_ms(500)
+    if_end
+if_end
