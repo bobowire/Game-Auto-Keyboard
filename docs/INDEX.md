@@ -23,6 +23,7 @@
 | [06-执行引擎](./06-execution-engine.md) | 多线程执行架构 | 独立线程 + 可中断 |
 | [07-UI设计](./07-ui-design.md) | egui 界面布局 | 窗口列表和脚本浏览 |
 | [08-配置管理](./08-configuration.md) | 配置文件格式 | 持久化和热重载 |
+| [11-语音控制系统](./11-voice-control-system.md) | ASR + AI 意图理解 | 百度语音/Whisper 双模式 |
 
 ### 📖 参考资料
 
