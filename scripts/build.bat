@@ -90,8 +90,14 @@ REM Copy example scripts to "scripts" subdirectory
 if not exist build\scripts mkdir build\scripts
 if exist scripts\example.ag copy /Y scripts\example.ag build\scripts\
 
+REM Copy assets (sound effects)
+if not exist build\assets mkdir build\assets
+if exist assets\beep_success.wav copy /Y assets\beep_success.wav build\assets\
+if exist assets\beep_fail.wav copy /Y assets\beep_fail.wav build\assets\
+
 echo Deployed to: build\game-auto-keyboard.exe
 echo Example scripts copied to: build\scripts\
+echo Sound effects copied to: build\assets\
 goto DONE
 
 :RELEASE
@@ -121,8 +127,14 @@ REM Copy example scripts to "scripts" subdirectory
 if not exist build\scripts mkdir build\scripts
 if exist scripts\example.ag copy /Y scripts\example.ag build\scripts\
 
+REM Copy assets (sound effects)
+if not exist build\assets mkdir build\assets
+if exist assets\beep_success.wav copy /Y assets\beep_success.wav build\assets\
+if exist assets\beep_fail.wav copy /Y assets\beep_fail.wav build\assets\
+
 echo Deployed to: build\game-auto-keyboard.exe
 echo Example scripts copied to: build\scripts\
+echo Sound effects copied to: build\assets\
 goto DONE
 
 :RUN

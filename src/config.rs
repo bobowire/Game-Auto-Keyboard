@@ -60,6 +60,9 @@ pub struct GeneralConfig {
     /// 日志文件开关（禁用后不写入 vlog.txt）
     #[serde(default = "default_true")]
     pub log_enabled: bool,
+    /// 唤醒词训练样本保存开关（禁用后不创建 wakeword_samples 目录）
+    #[serde(default)]
+    pub save_wakeword_samples: bool,
 }
 
 fn default_true() -> bool {
@@ -79,6 +82,7 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             log_enabled: true,
+            save_wakeword_samples: false,
         }
     }
 }

@@ -16,6 +16,8 @@ use crate::window_slot::{Scheme, WindowSlot};
 use eframe::egui;
 use std::path::PathBuf;
 use std::time::Instant;
+use windows::Win32::Media::Audio::PlaySoundW;
+use windows::core::PCWSTR;
 
 const SCRIPTS_DIR: &str = "scripts";
 const GRAB_COUNTDOWN_SECS: u64 = 3;
@@ -24,6 +26,25 @@ const SLOT_COUNT: usize = 8;
 const WAKEWORD_MODEL_PATH: &str = "wakeword_model.rpw";
 /// 唤醒阈值
 const WAKEWORD_THRESHOLD: f32 = 0.5;
+
+/// 播放音效文件（用于语音控制反馈）
+fn play_sound(name: &str) {
+    // 获取可执行文件所在目录
+    let path = if let Ok(exe_dir) = crate::utils::get_exe_dir() {
+        exe_dir.join("assets").join(name)
+    } else {
+        PathBuf::from("assets").join(name)
+    };
+
+    // 转换为宽字符串
+    let path_str = path.to_string_lossy().into_owned();
+    let wide: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
+
+    // 调用 Windows PlaySound API（忽略返回值）
+    unsafe {
+        let _ = PlaySoundW(PCWSTR(wide.as_ptr()), None, Default::default());
+    }
+}
 
 pub struct App {
     // 脚本列表（全局候选池）
@@ -79,6 +100,7 @@ pub struct App {
 
     // 通用配置（编辑用），从 config 加载
     log_enabled: bool,
+    save_wakeword_samples: bool,
 
     // 统一配置窗口
     show_settings: bool,
@@ -204,6 +226,7 @@ impl App {
             hotkey_enabled: config.hotkey.enabled,
             hotkey_impromptu_enabled: config.hotkey.impromptu_enabled,
             log_enabled: config.general.log_enabled,
+            save_wakeword_samples: config.general.save_wakeword_samples,
             show_settings: false,
             settings_tab: SettingsTab::General,
             show_voice_help: false,
@@ -244,6 +267,7 @@ impl App {
         cfg.hotkey.enabled = self.hotkey_enabled;
         cfg.hotkey.impromptu_enabled = self.hotkey_impromptu_enabled;
         cfg.general.log_enabled = self.log_enabled;
+        cfg.general.save_wakeword_samples = self.save_wakeword_samples;
 
         // 同步日志开关到 vlog 模块
         vlog::set_enabled(self.log_enabled);
@@ -458,23 +482,48 @@ impl App {
     fn train_wakeword_model(&mut self) {
         let Some(training) = &self.wakeword_training else { return };
 
-        // 1. 保存样本到临时文件
-        std::fs::create_dir_all("wakeword_samples").ok();
+        // 1. 保存样本到临时文件（如果配置开启）
         let mut sample_paths = Vec::new();
 
-        for (i, samples) in training.samples.iter().enumerate() {
-            let path = format!("wakeword_samples/sample_{}.wav", i + 1);
-            if let Err(e) = write_wav(&path, samples) {
-                self.status = format!("保存样本失败: {}", e);
-                self.show_wakeword_guide = false;
-                self.wakeword_training = None;
-                return;
+        if self.save_wakeword_samples {
+            std::fs::create_dir_all("wakeword_samples").ok();
+
+            for (i, samples) in training.samples.iter().enumerate() {
+                let path = format!("wakeword_samples/sample_{}.wav", i + 1);
+                if let Err(e) = write_wav(&path, samples) {
+                    self.status = format!("保存样本失败: {}", e);
+                    self.show_wakeword_guide = false;
+                    self.wakeword_training = None;
+                    return;
+                }
+                sample_paths.push(path);
             }
-            sample_paths.push(path);
+        } else {
+            // 不保存文件，使用临时文件
+            for (i, samples) in training.samples.iter().enumerate() {
+                let path = format!("wakeword_sample_temp_{}.wav", i + 1);
+                if let Err(e) = write_wav(&path, samples) {
+                    self.status = format!("保存临时样本失败: {}", e);
+                    self.show_wakeword_guide = false;
+                    self.wakeword_training = None;
+                    return;
+                }
+                sample_paths.push(path);
+            }
         }
 
         // 2. 训练模型
-        match train_wakeword("小助手", sample_paths, WAKEWORD_MODEL_PATH, Some(WAKEWORD_THRESHOLD)) {
+        let result = train_wakeword("小助手", sample_paths.clone(), WAKEWORD_MODEL_PATH, Some(WAKEWORD_THRESHOLD));
+
+        // 3. 清理临时文件（如果不保存样本）
+        if !self.save_wakeword_samples {
+            for path in &sample_paths {
+                std::fs::remove_file(path).ok();
+            }
+        }
+
+        // 4. 处理训练结果
+        match result {
             Ok(_) => {
                 self.status = format!("✓ 唤醒词模型训练完成！已保存到 {}", WAKEWORD_MODEL_PATH);
                 self.show_wakeword_guide = false;
@@ -509,11 +558,13 @@ impl App {
                 vlog!("[intent] 匹配: 停止全部");
                 self.stop_all();
                 self.status = format!("🎤「{}」→ 停止全部", text);
+                play_sound("beep_success.wav");
             }
             Some(VoiceIntent::StopWindow(idx)) => {
                 vlog!("[intent] 匹配: 停止窗口 {}", idx + 1);
                 self.stop_slot(idx);
                 self.status = format!("🎤「{}」→ 停止 {}", text, self.slots[idx].name);
+                play_sound("beep_success.wav");
             }
             Some(VoiceIntent::RunAction { window, action }) => {
                 vlog!("[intent] 匹配: 窗口 {} 执行动作「{}」", window + 1, action);
@@ -522,6 +573,7 @@ impl App {
             None => {
                 vlog!("[intent] 未匹配到任何窗口名或停止指令");
                 self.status = format!("🎤「{}」→ 未匹配到指令", text);
+                play_sound("beep_fail.wav");
             }
         }
     }
@@ -532,6 +584,7 @@ impl App {
         if !self.slots[idx].is_bound() {
             vlog!("[intent] 窗口 {}({}) 未绑定窗口句柄，无法执行", idx + 1, win_name);
             self.status = format!("🎤「{}」→ {} 未绑定窗口", raw, win_name);
+            play_sound("beep_fail.wav");
             return;
         }
         // 在该窗口已添加的方案里按动作关键词匹配脚本
@@ -552,8 +605,10 @@ impl App {
                     vlog!("[intent] 已启动窗口 {} 的脚本「{}」", idx + 1, script_name);
                     self.status =
                         format!("🎤「{}」→ {} 执行 {}", raw, win_name, script_name);
+                    play_sound("beep_success.wav");
                 } else {
                     vlog!("[intent] start_slot 返回 false（窗口失效/无标识方案），未执行");
+                    play_sound("beep_fail.wav");
                 }
             }
             None => {
@@ -562,6 +617,7 @@ impl App {
                     "🎤「{}」→ {} 未找到匹配「{}」的脚本",
                     raw, win_name, action
                 );
+                play_sound("beep_fail.wav");
             }
         }
     }
@@ -1226,7 +1282,7 @@ impl App {
 
         ui.checkbox(&mut self.log_enabled, "启用日志文件");
         ui.add_space(2.0);
-        ui.label("禁用后将不会写入 vlog.txt 日志文件");
+        ui.label("禁用后将不会写入 voice_debug.log 日志文件");
 
         if !self.log_enabled {
             ui.add_space(4.0);
@@ -1235,6 +1291,15 @@ impl App {
                 "⚠ 日志已禁用，问题排查将受限"
             );
         }
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("唤醒词训练").strong());
+        ui.add_space(4.0);
+
+        ui.checkbox(&mut self.save_wakeword_samples, "保存训练样本");
+        ui.add_space(2.0);
+        ui.label("开启后，训练唤醒词时会保存录音样本到 wakeword_samples/ 目录");
+        ui.label("关闭后，训练时使用临时文件，训练完成后自动删除");
     }
 
     /// 语音配置标签页
