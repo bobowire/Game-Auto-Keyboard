@@ -84,11 +84,17 @@ if exist build\flycheck0 rmdir /S /Q build\flycheck0
 REM Create build directory if not exists
 if not exist build mkdir build
 
-REM Copy only the executable
+REM Copy the executable
 copy /Y target\debug\game-auto-keyboard.exe build\
+
+REM Copy example scripts to "按键脚本" directory
+if not exist "build\按键脚本" mkdir "build\按键脚本"
+if exist scripts\example.ag copy /Y scripts\example.ag "build\按键脚本\"
+
 echo Deployed to: build\game-auto-keyboard.exe
+echo Example scripts copied to: build\按键脚本\
 echo.
-echo NOTE: Runtime files (config.json, wakeword_model.rpw, scripts/) are preserved.
+echo NOTE: Runtime files (config.json, wakeword_model.rpw) are preserved.
 goto DONE
 
 :RELEASE
@@ -112,11 +118,17 @@ if exist build\flycheck0 rmdir /S /Q build\flycheck0
 REM Create build directory if not exists
 if not exist build mkdir build
 
-REM Copy only the executable
+REM Copy the executable
 copy /Y target\release\game-auto-keyboard.exe build\
+
+REM Copy example scripts to "按键脚本" directory
+if not exist "build\按键脚本" mkdir "build\按键脚本"
+if exist scripts\example.ag copy /Y scripts\example.ag "build\按键脚本\"
+
 echo Deployed to: build\game-auto-keyboard.exe
+echo Example scripts copied to: build\按键脚本\
 echo.
-echo NOTE: Runtime files (config.json, wakeword_model.rpw, scripts/) are preserved.
+echo NOTE: Runtime files (config.json, wakeword_model.rpw) are preserved.
 goto DONE
 
 :RUN
