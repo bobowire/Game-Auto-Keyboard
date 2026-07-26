@@ -9,7 +9,8 @@ use crate::tray::{Tray, TrayCommand};
 use crate::utils::win32;
 use crate::vlog;
 use crate::voice::{
-    match_script, parse_intent, VoiceConfig, VoiceEvent, VoiceIntent, VoiceRuntime,
+    match_script, parse_intent, AudioCapture, VoiceConfig, VoiceEvent, VoiceIntent, VoiceRuntime,
+    train_wakeword, trim_silence, TARGET_SAMPLE_RATE,
 };
 use crate::window_slot::{Scheme, WindowSlot};
 use eframe::egui;
@@ -83,9 +84,24 @@ pub struct App {
     show_baidu_guide: bool,
     // 是否显示唤醒词训练引导窗口
     show_wakeword_guide: bool,
+    // 唤醒词训练状态
+    wakeword_training: Option<WakewordTrainingState>,
 
     // 状态提示
     status: String,
+}
+
+/// 唤醒词训练状态
+struct WakewordTrainingState {
+    current_round: usize,      // 当前第几遍 (1-4)
+    total_rounds: usize,       // 总共几遍 (4)
+    is_recording: bool,        // 是否正在录制
+    record_start: Option<Instant>, // 录制开始时间
+    record_duration: f32,      // 录制时长(秒)
+    samples: Vec<Vec<i16>>,    // 已录制的样本
+    status_msg: String,        // 状态消息
+    capture: Option<AudioCapture>, // 音频采集器
+    recording_buffer: Vec<i16>, // 当前录制的缓冲区
 }
 
 /// 配置窗口标签页
@@ -177,6 +193,7 @@ impl App {
             show_voice_help: false,
             show_baidu_guide: false,
             show_wakeword_guide: false,
+            wakeword_training: None,
             status,
         }
     }
@@ -373,6 +390,80 @@ impl App {
         if stopped {
             // 后台线程已退出（多为出错自停），清理句柄
             self.voice = None;
+        }
+    }
+
+    /// 处理唤醒词训练的录音逻辑
+    fn process_wakeword_training(&mut self) {
+        let Some(training) = &mut self.wakeword_training else { return };
+
+        if training.is_recording {
+            // 持续采集音频
+            if let Some(capture) = &training.capture {
+                let frame = capture.poll();
+                training.recording_buffer.extend_from_slice(&frame);
+            }
+
+            // 检查录音是否完成
+            if let Some(start) = training.record_start {
+                let elapsed = start.elapsed().as_secs_f32();
+                if elapsed >= training.record_duration {
+                    // 录音完成，处理音频数据
+                    training.is_recording = false;
+                    training.record_start = None;
+
+                    // 裁剪首尾静音
+                    let sr = TARGET_SAMPLE_RATE as usize;
+                    let trimmed = trim_silence(&training.recording_buffer, sr, 20, 300.0, 80);
+
+                    // 保存样本
+                    training.samples.push(trimmed);
+
+                    if training.samples.len() >= training.total_rounds {
+                        // 所有样本录制完成，开始训练
+                        training.status_msg = "录制完成！正在训练模型...".to_string();
+                        self.train_wakeword_model();
+                    } else {
+                        // 进入下一轮
+                        training.current_round += 1;
+                        training.status_msg = format!("✓ 第 {} 遍完成", training.samples.len());
+                    }
+                }
+            }
+        }
+    }
+
+    /// 训练唤醒词模型
+    fn train_wakeword_model(&mut self) {
+        let Some(training) = &self.wakeword_training else { return };
+
+        // 1. 保存样本到临时文件
+        std::fs::create_dir_all("wakeword_samples").ok();
+        let mut sample_paths = Vec::new();
+
+        for (i, samples) in training.samples.iter().enumerate() {
+            let path = format!("wakeword_samples/sample_{}.wav", i + 1);
+            if let Err(e) = write_wav(&path, samples) {
+                self.status = format!("保存样本失败: {}", e);
+                self.show_wakeword_guide = false;
+                self.wakeword_training = None;
+                return;
+            }
+            sample_paths.push(path);
+        }
+
+        // 2. 训练模型
+        match train_wakeword("小助手", sample_paths, WAKEWORD_MODEL_PATH, Some(WAKEWORD_THRESHOLD)) {
+            Ok(_) => {
+                self.status = format!("✓ 唤醒词模型训练完成！已保存到 {}", WAKEWORD_MODEL_PATH);
+                self.show_wakeword_guide = false;
+                self.wakeword_training = None;
+            }
+            Err(e) => {
+                self.status = format!("训练失败: {}", e);
+                self.show_wakeword_guide = false;
+                self.wakeword_training = None;
+            }
         }
     }
 
@@ -683,6 +774,7 @@ impl eframe::App for App {
         self.process_hotkeys();
         self.process_tray(ctx);
         self.process_voice();
+        self.process_wakeword_training();
         self.handle_grabbing();
         self.handle_picking();
         self.check_window_validity();
@@ -1064,12 +1156,17 @@ impl App {
         ui.horizontal(|ui| {
             ui.label("唤醒词模型:");
             if model_ok {
-                ui.colored_label(egui::Color32::GREEN, format!("✓ {}", WAKEWORD_MODEL_PATH));
+                if ui.link(format!("✓ {}", WAKEWORD_MODEL_PATH))
+                    .on_hover_text("点击查看训练指南")
+                    .clicked() {
+                    self.show_wakeword_guide = true;
+                }
             } else {
-                ui.colored_label(
-                    egui::Color32::RED,
-                    format!("✗ 缺失 {}（请先用 wakeword_test 训练）", WAKEWORD_MODEL_PATH),
-                );
+                if ui.link(format!("✗ 缺失 {}", WAKEWORD_MODEL_PATH))
+                    .on_hover_text("点击查看如何训练唤醒词模型")
+                    .clicked() {
+                    self.show_wakeword_guide = true;
+                }
             }
         });
 
@@ -1224,13 +1321,22 @@ impl App {
                     ui.label("1️⃣ 登录百度账号（没有则先注册）");
                     ui.add_space(2.0);
 
-                    ui.label("2️⃣ 进入「语音技术」→「短语音识别」");
+                    ui.label("2️⃣ 完成实名认证（必须，否则无免费额度）");
+                    ui.indent("auth_tip", |ui| {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 165, 0),
+                            "⚠ 未实名认证的账号无法使用免费额度"
+                        );
+                    });
                     ui.add_space(2.0);
 
-                    ui.label("3️⃣ 点击「创建应用」");
+                    ui.label("3️⃣ 进入「语音技术」→「短语音识别」");
                     ui.add_space(2.0);
 
-                    ui.label("4️⃣ 填写应用信息：");
+                    ui.label("4️⃣ 点击「创建应用」");
+                    ui.add_space(2.0);
+
+                    ui.label("5️⃣ 填写应用信息：");
                     ui.indent("app_info", |ui| {
                         ui.label("• 应用名称：随意填写（如「游戏助手」）");
                         ui.label("• 接口选择：勾选「短语音识别」");
@@ -1238,7 +1344,7 @@ impl App {
                     });
                     ui.add_space(2.0);
 
-                    ui.label("5️⃣ 创建成功后，在应用列表查看：");
+                    ui.label("6️⃣ 创建成功后，在应用列表查看：");
                     ui.indent("keys", |ui| {
                         ui.label("• API Key（复制到设置窗口）");
                         ui.label("• Secret Key（复制到设置窗口）");
@@ -1249,7 +1355,7 @@ impl App {
                     ui.add_space(8.0);
 
                     ui.label("💡 提示：");
-                    ui.label("• 每个账号有免费额度（每天50,000次调用）");
+                    ui.label("• 实名认证后每个账号有免费额度（每天50,000次调用）");
                     ui.label("• 超出免费额度后按次计费");
                     ui.label("• 详细定价见官网文档");
 
@@ -1278,76 +1384,86 @@ impl App {
 
         let viewport_id = egui::ViewportId::from_hash_of("wakeword_guide_viewport");
         let builder = egui::ViewportBuilder::default()
-            .with_title("🎤 唤醒词训练指南")
-            .with_inner_size([520.0, 600.0]);
+            .with_title("🎤 唤醒词训练")
+            .with_inner_size([450.0, 350.0]);
 
         let mut should_close = false;
+        let mut start_training = false;
+        let mut start_recording = false;
+
         ctx.show_viewport_immediate(viewport_id, builder, |ctx, _class| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.heading("需要训练唤醒词模型");
-                    ui.add_space(4.0);
+                ui.add_space(8.0);
 
-                    ui.label("语音控制需要先训练唤醒词「小助手」，生成识别模型。");
+                // 如果没有训练状态，显示开始界面
+                if self.wakeword_training.is_none() {
+                    ui.heading("训练唤醒词「小助手」");
                     ui.add_space(12.0);
-                    ui.separator();
+
+                    ui.label("需要录制 4 遍唤醒词来训练识别模型");
                     ui.add_space(8.0);
 
-                    ui.label(egui::RichText::new("训练步骤：").strong());
-                    ui.add_space(4.0);
-
-                    ui.label("1️⃣ 关闭当前程序");
-                    ui.add_space(2.0);
-
-                    ui.label("2️⃣ 打开命令行（cmd），进入项目目录");
-                    ui.add_space(2.0);
-
-                    ui.label("3️⃣ 运行训练工具：");
-                    ui.add_space(4.0);
-                    ui.indent("cmd", |ui| {
-                        ui.horizontal(|ui| {
-                            ui.monospace("cargo run --example wakeword_test --release");
-                            if ui.button("📋 复制").clicked() {
-                                ui.output_mut(|o| {
-                                    o.copied_text = "cargo run --example wakeword_test --release".to_string();
-                                });
-                            }
-                        });
-                        ui.label("或使用 build.bat 选择 [a] wakeword_test");
-                    });
-                    ui.add_space(4.0);
-
-                    ui.label("4️⃣ 按提示录制 4 遍「小助手」");
-                    ui.indent("record", |ui| {
-                        ui.label("• 每次录制 2 秒");
-                        ui.label("• 环境安静，说话清晰");
+                    ui.label("📝 录制要求：");
+                    ui.indent("requirements", |ui| {
+                        ui.label("• 每次录制 1.5 秒");
+                        ui.label("• 环境安静，发音清晰");
                         ui.label("• 4 遍读音保持一致");
+                        ui.label("• 点击按钮后立即说话");
                     });
-                    ui.add_space(2.0);
 
-                    ui.label("5️⃣ 训练完成后生成模型文件：");
-                    ui.add_space(4.0);
-                    ui.indent("output", |ui| {
-                        ui.colored_label(egui::Color32::GREEN, "wakeword_model.rpw");
+                    ui.add_space(20.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("✅ 开始训练").clicked() {
+                            start_training = true;
+                        }
+                        ui.add_space(8.0);
+                        if ui.button("❌ 取消").clicked() {
+                            should_close = true;
+                        }
                     });
-                    ui.add_space(4.0);
+                } else {
+                    // 训练进行中
+                    if let Some(training) = &self.wakeword_training {
+                        ui.heading(format!("第 {}/{} 遍", training.current_round, training.total_rounds));
+                        ui.add_space(12.0);
 
-                    ui.label("6️⃣ 重新打开本程序，再次点击语音开关");
+                        ui.label(
+                            egui::RichText::new("请清晰地说：小助手")
+                                .size(20.0)
+                                .color(egui::Color32::from_rgb(100, 150, 255))
+                        );
+                        ui.add_space(16.0);
 
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(8.0);
+                        // 显示状态
+                        if training.is_recording {
+                            if let Some(start) = training.record_start {
+                                let elapsed = start.elapsed().as_secs_f32();
+                                let progress = (elapsed / training.record_duration).min(1.0);
 
-                    ui.label("💡 提示：");
-                    ui.label("• 训练只需一次，模型文件可重复使用");
-                    ui.label("• 如果识别不准，可重新训练");
-                    ui.label("• 训练时麦克风不要被其他程序占用");
+                                ui.add(egui::ProgressBar::new(progress)
+                                    .text(format!("🔴 录音中... {:.1}/{:.1}秒", elapsed, training.record_duration))
+                                    .desired_width(350.0));
+                            }
+                        } else {
+                            ui.colored_label(egui::Color32::GREEN, &training.status_msg);
+                            ui.add_space(12.0);
 
-                    ui.add_space(12.0);
-                    if ui.button("✅ 我已了解").clicked() {
-                        should_close = true;
+                            if training.current_round <= training.total_rounds {
+                                if ui.button("🎙 点击开始录制").clicked() {
+                                    start_recording = true;
+                                }
+                            }
+                        }
+
+                        ui.add_space(16.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        // 显示已完成的样本
+                        ui.label(format!("已完成: {}/{}", training.samples.len(), training.total_rounds));
                     }
-                });
+                }
             });
 
             if ctx.input(|i| i.viewport().close_requested()) {
@@ -1355,8 +1471,60 @@ impl App {
             }
         });
 
+        // 处理动作
+        if start_training {
+            self.start_wakeword_training();
+        }
+
+        if start_recording {
+            self.start_wakeword_recording();
+        }
+
         if should_close {
             self.show_wakeword_guide = false;
+            self.wakeword_training = None;
+        }
+    }
+
+    /// 开始唤醒词训练
+    fn start_wakeword_training(&mut self) {
+        // 尝试启动音频采集
+        let capture = match AudioCapture::start() {
+            Ok(c) => {
+                self.status = "麦克风已就绪，准备录制".to_string();
+                Some(c)
+            }
+            Err(e) => {
+                self.status = format!("启动麦克风失败: {}", e);
+                self.show_wakeword_guide = false;
+                return;
+            }
+        };
+
+        self.wakeword_training = Some(WakewordTrainingState {
+            current_round: 1,
+            total_rounds: 4,
+            is_recording: false,
+            record_start: None,
+            record_duration: 1.5,
+            samples: Vec::new(),
+            status_msg: "准备录制第 1 遍".to_string(),
+            capture,
+            recording_buffer: Vec::new(),
+        });
+    }
+
+    /// 开始录制一遍
+    fn start_wakeword_recording(&mut self) {
+        if let Some(training) = &mut self.wakeword_training {
+            // 清空之前的缓冲
+            if let Some(capture) = &training.capture {
+                capture.poll();
+            }
+            training.recording_buffer.clear();
+            training.is_recording = true;
+            training.record_start = Some(Instant::now());
+            training.status_msg = "正在录制...".to_string();
         }
     }
 
@@ -1632,5 +1800,34 @@ impl App {
             self.save_config();
         }
     }
+}
+
+/// 写 16bit 单声道 PCM wav（采样率 = TARGET_SAMPLE_RATE）
+fn write_wav(path: &str, samples: &[i16]) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::{BufWriter, Write};
+
+    let mut w = BufWriter::new(File::create(path)?);
+    let sr = TARGET_SAMPLE_RATE;
+    let data_bytes = (samples.len() * 2) as u32;
+    let byte_rate = sr * 2;
+
+    w.write_all(b"RIFF")?;
+    w.write_all(&(36 + data_bytes).to_le_bytes())?;
+    w.write_all(b"WAVE")?;
+    w.write_all(b"fmt ")?;
+    w.write_all(&16u32.to_le_bytes())?;
+    w.write_all(&1u16.to_le_bytes())?; // PCM
+    w.write_all(&1u16.to_le_bytes())?; // 单声道
+    w.write_all(&sr.to_le_bytes())?;
+    w.write_all(&byte_rate.to_le_bytes())?;
+    w.write_all(&2u16.to_le_bytes())?;
+    w.write_all(&16u16.to_le_bytes())?;
+    w.write_all(b"data")?;
+    w.write_all(&data_bytes.to_le_bytes())?;
+    for s in samples {
+        w.write_all(&s.to_le_bytes())?;
+    }
+    Ok(())
 }
 
