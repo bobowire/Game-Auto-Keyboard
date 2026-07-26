@@ -325,7 +325,6 @@ impl App {
             self.status = "⚠ 请先配置百度语音识别密钥".to_string();
             self.show_settings = true;
             self.settings_tab = SettingsTab::Voice;
-            self.show_baidu_guide = true;
             return;
         }
 
@@ -1031,10 +1030,17 @@ impl App {
 
     /// 语音配置标签页
     fn ui_settings_voice(&mut self, ui: &mut egui::Ui, _act_save: &mut bool) {
-        ui.label(
-            egui::RichText::new("百度语音识别密钥（在百度智能云控制台申请）")
-                .strong(),
-        );
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("百度语音识别密钥")
+                    .strong(),
+            );
+            ui.label("（");
+            if ui.link("在百度智能云控制台申请").clicked() {
+                self.show_baidu_guide = true;
+            }
+            ui.label("）");
+        });
         ui.add_space(4.0);
         egui::Grid::new("baidu_keys").num_columns(2).show(ui, |ui| {
             ui.label("API Key:");
