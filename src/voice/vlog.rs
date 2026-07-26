@@ -7,10 +7,19 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const LOG_FILE: &str = "voice_debug.log";
+const LOG_FILENAME: &str = "voice_debug.log";
 
 /// 全局日志开关（线程安全）
 static LOG_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// 获取日志文件完整路径（基于可执行文件目录）
+fn get_log_path() -> std::path::PathBuf {
+    if let Ok(exe_dir) = crate::utils::get_exe_dir() {
+        exe_dir.join(LOG_FILENAME)
+    } else {
+        std::path::PathBuf::from(LOG_FILENAME)
+    }
+}
 
 /// 设置日志开关
 pub fn set_enabled(enabled: bool) {
@@ -33,7 +42,8 @@ pub fn log(msg: &str) {
         .unwrap_or(0);
     let line = format!("[{}] {}", ts, msg);
     eprintln!("{}", line);
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(LOG_FILE) {
+    let log_path = get_log_path();
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(log_path) {
         let _ = writeln!(f, "{}", line);
     }
 }

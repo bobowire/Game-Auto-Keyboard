@@ -6,7 +6,17 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-const CONFIG_PATH: &str = "config/config.json";
+const CONFIG_FILENAME: &str = "config.json";
+
+/// 获取配置文件的完整路径（基于可执行文件目录）
+fn get_config_path() -> PathBuf {
+    if let Ok(exe_dir) = crate::utils::get_exe_dir() {
+        exe_dir.join(CONFIG_FILENAME)
+    } else {
+        // 降级方案：使用当前目录
+        PathBuf::from(CONFIG_FILENAME)
+    }
+}
 
 /// 单个槽位的持久化配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -104,7 +114,7 @@ impl Default for AppConfig {
 impl AppConfig {
     /// 从默认路径加载；文件不存在或损坏时返回默认配置
     pub fn load() -> Self {
-        Self::load_from(Path::new(CONFIG_PATH))
+        Self::load_from(&get_config_path())
     }
 
     pub fn load_from(path: &Path) -> Self {
@@ -125,7 +135,7 @@ impl AppConfig {
 
     /// 保存到默认路径
     pub fn save(&self) -> Result<(), String> {
-        self.save_to(Path::new(CONFIG_PATH))
+        self.save_to(&get_config_path())
     }
 
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
@@ -161,6 +171,6 @@ impl AppConfig {
 
     /// 便捷：返回配置文件路径
     pub fn path() -> PathBuf {
-        PathBuf::from(CONFIG_PATH)
+        get_config_path()
     }
 }

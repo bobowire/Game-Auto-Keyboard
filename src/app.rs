@@ -17,7 +17,7 @@ use eframe::egui;
 use std::path::PathBuf;
 use std::time::Instant;
 
-const SCRIPTS_DIR: &str = "scripts";
+const SCRIPTS_DIR: &str = "按键脚本";
 const GRAB_COUNTDOWN_SECS: u64 = 3;
 const SLOT_COUNT: usize = 8;
 /// 唤醒词模型文件（由 wakeword_test 训练生成，放在工作目录）
@@ -117,7 +117,12 @@ enum SettingsTab {
 
 impl App {
     pub fn new() -> Self {
-        let scripts_dir = PathBuf::from(SCRIPTS_DIR);
+        // 获取可执行文件所在目录下的脚本目录
+        let scripts_dir = if let Ok(exe_dir) = crate::utils::get_exe_dir() {
+            exe_dir.join(SCRIPTS_DIR)
+        } else {
+            PathBuf::from(SCRIPTS_DIR)
+        };
         let scripts = load_dir(&scripts_dir).unwrap_or_default();
 
         // 从配置恢复方案绑定（按文件名从脚本池重建命令）
@@ -902,20 +907,36 @@ impl App {
                 ui.label("点击脚本加入该窗口的方案集：");
                 ui.separator();
                 egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    // 按分类分组
+                    let mut categories: std::collections::BTreeMap<String, Vec<(usize, &ScriptFile)>> =
+                        std::collections::BTreeMap::new();
                     for (i, sf) in self.scripts.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let valid = sf.is_valid();
-                            if valid {
-                                ui.colored_label(egui::Color32::GREEN, "✓");
-                            } else {
-                                ui.colored_label(egui::Color32::RED, "✗");
-                            }
-                            ui.label(&sf.name);
-                            // 仅解析成功的脚本可加入
-                            if valid && ui.small_button("加入").clicked() {
-                                to_add = Some(i);
-                            }
-                        });
+                        categories.entry(sf.category.clone())
+                            .or_insert_with(Vec::new)
+                            .push((i, sf));
+                    }
+
+                    // 显示每个分类
+                    for (category, scripts) in categories {
+                        egui::CollapsingHeader::new(&category)
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for (i, sf) in scripts {
+                                    ui.horizontal(|ui| {
+                                        let valid = sf.is_valid();
+                                        if valid {
+                                            ui.colored_label(egui::Color32::GREEN, "✓");
+                                        } else {
+                                            ui.colored_label(egui::Color32::RED, "✗");
+                                        }
+                                        ui.label(&sf.name);
+                                        // 仅解析成功的脚本可加入
+                                        if valid && ui.small_button("加入").clicked() {
+                                            to_add = Some(i);
+                                        }
+                                    });
+                                }
+                            });
                     }
                 });
             });
