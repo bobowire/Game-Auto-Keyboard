@@ -1,6 +1,8 @@
 // Windows 下隐藏控制台窗口（release 构建时）
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use game_auto_keyboard::App;
 
 fn main() -> eframe::Result<()> {
