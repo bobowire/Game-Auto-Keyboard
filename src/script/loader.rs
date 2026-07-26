@@ -1,9 +1,16 @@
 // 脚本文件加载器 - 扫描目录、读取并解析 .ag 文件
 
-use crate::script::ast::Command;
+use crate::script::ast::{Command, Setting};
 use crate::script::parser::Parser;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// 脚本设置项（从脚本中的 setting 指令提取）
+#[derive(Debug, Clone, Default)]
+pub struct ScriptSettings {
+    /// 语音场景下仅执行一次
+    pub audio_only_once: bool,
+}
 
 /// 一个已加载的脚本方案
 #[derive(Debug, Clone)]
@@ -20,6 +27,8 @@ pub struct ScriptFile {
     pub commands: Option<Vec<Command>>,
     /// 解析错误信息
     pub parse_error: Option<String>,
+    /// 脚本设置项（从 setting 指令提取）
+    pub settings: ScriptSettings,
 }
 
 impl ScriptFile {
@@ -57,6 +66,9 @@ impl ScriptFile {
             Err(e) => (None, Some(e)),
         };
 
+        // 从命令中提取设置项
+        let settings = extract_settings(&commands);
+
         Ok(ScriptFile {
             name,
             path: path.to_path_buf(),
@@ -64,6 +76,7 @@ impl ScriptFile {
             source,
             commands,
             parse_error,
+            settings,
         })
     }
 
@@ -114,4 +127,21 @@ fn load_dir_recursive(root_dir: &Path, current_dir: &Path, scripts: &mut Vec<Scr
     }
 
     Ok(())
+}
+
+/// 从命令列表中提取设置项
+fn extract_settings(commands: &Option<Vec<Command>>) -> ScriptSettings {
+    let mut settings = ScriptSettings::default();
+
+    if let Some(cmds) = commands {
+        for cmd in cmds {
+            if let Command::Setting(s) = cmd {
+                match s {
+                    Setting::AudioOnlyOnce => settings.audio_only_once = true,
+                }
+            }
+        }
+    }
+
+    settings
 }

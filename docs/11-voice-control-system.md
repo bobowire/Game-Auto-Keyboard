@@ -912,6 +912,23 @@ pub fn parse_intent(text: &str, windows: &[(usize, String)]) -> Option<VoiceInte
 - 动作文本包含主名即命中：`"跟随我"` 包含 `"跟随"` ✓
 - 多个命中取主名最长者（更精确）
 
+**脚本设置**（`setting` 指令）：
+- 脚本可通过 `setting(audio_onlyonce)` 声明语音场景下的执行模式
+- 语音触发时检查该设置，决定是**循环执行**还是**单次执行**
+- 适合"跟随"、"加血"等只需执行一次的动作
+
+```ag
+// 跟随.ag - 语音单次执行示例
+setting(audio_onlyonce)
+
+click(1)
+delay_ms(500)
+```
+
+| 设置 | 作用 |
+|------|------|
+| `setting(audio_onlyonce)` | 语音场景下仅执行一次（执行一轮后自动停止） |
+
 ### 8.3 语音运行时（`src/voice/runtime.rs`）
 
 后台线程运行完整流水线，通过 channel 回传事件：

@@ -125,3 +125,16 @@ fn test_if_without_end_errors() {
     let src = "if_start[find_color(1,2,3,4,#ffffff) == true]\n click(1)";
     assert!(parse(src).is_err());
 }
+
+#[test]
+fn test_setting_audio_onlyonce() {
+    let cmds = parse("setting(audio_onlyonce)\nclick(1)").unwrap();
+    assert_eq!(cmds.len(), 2);
+    assert_eq!(cmds[0], Command::Setting(Setting::AudioOnlyOnce));
+    assert_eq!(cmds[1], Command::Click("1".to_string()));
+}
+
+#[test]
+fn test_unknown_setting_errors() {
+    assert!(parse("setting(unknown)").is_err());
+}

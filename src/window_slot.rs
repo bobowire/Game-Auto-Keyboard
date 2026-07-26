@@ -2,7 +2,7 @@
 // 最多 8 个槽位（对应热键 1-8）
 
 use crate::runner::Runner;
-use crate::script::Command;
+use crate::script::{Command, ScriptSettings};
 
 /// 一个绑定到窗口的方案（引用某个脚本文件）
 #[derive(Clone)]
@@ -11,6 +11,8 @@ pub struct Scheme {
     pub script_name: String,
     /// 解析好的命令（从 ScriptFile 拷贝，执行时用）
     pub commands: Vec<Command>,
+    /// 脚本设置项（从 ScriptFile 拷贝）
+    pub settings: ScriptSettings,
 }
 
 /// 单个窗口槽位

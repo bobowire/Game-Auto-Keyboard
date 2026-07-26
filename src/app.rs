@@ -4,7 +4,7 @@ use crate::color_picker::ColorPicker;
 use crate::config::AppConfig;
 use crate::hotkey::{HotkeyAction, HotkeyKey, HotkeyManager, HotkeyStateMachine};
 use crate::runner::Runner;
-use crate::script::{load_dir, ScriptFile};
+use crate::script::{load_dir, ScriptFile, ScriptSettings};
 use crate::tray::{Tray, TrayCommand};
 use crate::utils::win32;
 use crate::vlog;
@@ -166,6 +166,7 @@ impl App {
                             slot.schemes.push(Scheme {
                                 script_name: sf.name.clone(),
                                 commands: cmds.clone(),
+                                settings: sf.settings.clone(),
                             });
                         }
                     }
@@ -598,16 +599,25 @@ impl App {
         match matched {
             Some(scheme_idx) => {
                 let script_name = self.slots[idx].schemes[scheme_idx].script_name.clone();
+                let audio_only_once = self.slots[idx].schemes[scheme_idx].settings.audio_only_once;
+
                 vlog!("[intent] 动作「{}」匹配到脚本「{}」，启动", action, script_name);
-                // 设为标识方案并循环启动
                 self.slots[idx].set_marked(scheme_idx);
-                if self.start_slot(idx) {
+
+                // 根据脚本设置选择执行模式
+                let success = if audio_only_once {
+                    vlog!("[intent] 脚本设置 audio_only_once=true，单次执行");
+                    self.run_slot_once(idx)
+                } else {
+                    self.start_slot(idx)
+                };
+
+                if success {
                     vlog!("[intent] 已启动窗口 {} 的脚本「{}」", idx + 1, script_name);
-                    self.status =
-                        format!("🎤「{}」→ {} 执行 {}", raw, win_name, script_name);
+                    self.status = format!("🎤「{}」→ {} 执行 {}", raw, win_name, script_name);
                     play_sound("beep_success.wav");
                 } else {
-                    vlog!("[intent] start_slot 返回 false（窗口失效/无标识方案），未执行");
+                    vlog!("[intent] start_slot/run_slot_once 返回 false（窗口失效/无标识方案），未执行");
                     play_sound("beep_fail.wav");
                 }
             }
@@ -1005,12 +1015,12 @@ impl App {
         let mut open = true;
 
         // 先收集所有脚本信息，避免借用冲突
-        let script_list: Vec<(usize, String, String, bool, Option<Vec<crate::script::Command>>, Option<String>)> =
+        let script_list: Vec<(usize, String, String, bool, Option<Vec<crate::script::Command>>, Option<String>, crate::script::ScriptSettings)> =
             self.scripts.iter().enumerate().map(|(i, sf)| {
-                (i, sf.name.clone(), sf.category.clone(), sf.is_valid(), sf.commands.clone(), sf.parse_error.clone())
+                (i, sf.name.clone(), sf.category.clone(), sf.is_valid(), sf.commands.clone(), sf.parse_error.clone(), sf.settings.clone())
             }).collect();
 
-        let mut to_add: Option<(usize, String, Vec<crate::script::Command>)> = None;
+        let mut to_add: Option<(usize, String, Vec<crate::script::Command>, crate::script::ScriptSettings)> = None;
 
         egui::Window::new(format!("为窗口 {} 添加方案", slot_idx + 1))
             .collapsible(false)
@@ -1022,12 +1032,12 @@ impl App {
 
                 egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                     // 按分类分组
-                    let mut categories: std::collections::BTreeMap<String, Vec<(usize, String, bool, Option<Vec<crate::script::Command>>, Option<String>)>> =
+                    let mut categories: std::collections::BTreeMap<String, Vec<(usize, String, bool, Option<Vec<crate::script::Command>>, Option<String>, crate::script::ScriptSettings)>> =
                         std::collections::BTreeMap::new();
-                    for (i, name, category, valid, commands, parse_error) in &script_list {
+                    for (i, name, category, valid, commands, parse_error, settings) in &script_list {
                         categories.entry(category.clone())
                             .or_insert_with(Vec::new)
-                            .push((*i, name.clone(), *valid, commands.clone(), parse_error.clone()));
+                            .push((*i, name.clone(), *valid, commands.clone(), parse_error.clone(), settings.clone()));
                     }
 
                     // 显示每个分类
@@ -1035,7 +1045,7 @@ impl App {
                         egui::CollapsingHeader::new(&category)
                             .default_open(true)
                             .show(ui, |ui| {
-                                for (i, name, valid, commands, parse_error) in scripts {
+                                for (i, name, valid, commands, parse_error, settings) in scripts {
                                     ui.horizontal(|ui| {
                                         // 状态文本标签
                                         if valid {
@@ -1051,7 +1061,7 @@ impl App {
                                         if valid {
                                             if ui.small_button("加入").clicked() {
                                                 if let Some(cmds) = commands {
-                                                    to_add = Some((i, name.clone(), cmds));
+                                                    to_add = Some((i, name.clone(), cmds, settings));
                                                 }
                                             }
                                         }
@@ -1063,10 +1073,11 @@ impl App {
             });
 
         // 处理添加操作
-        if let Some((script_idx, script_name, commands)) = to_add {
+        if let Some((script_idx, script_name, commands, settings)) = to_add {
             let scheme = Scheme {
                 script_name,
                 commands,
+                settings,
             };
             if self.slots[slot_idx].add_scheme(scheme) {
                 self.status = format!("窗口 {} 已添加方案: {}", slot_idx + 1, self.scripts[script_idx].name);

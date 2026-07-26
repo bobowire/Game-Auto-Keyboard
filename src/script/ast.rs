@@ -1,6 +1,13 @@
 // AST - 抽象语法树节点定义
 // 对齐原始括号式语法（见 scripts/example.ag）
 
+/// 脚本设置项
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Setting {
+    /// 语音场景下仅执行一次（执行一轮后自动停止）
+    AudioOnlyOnce,
+}
+
 /// 鼠标按钮
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MouseButton {
@@ -23,6 +30,9 @@ pub enum Coord {
 /// 顶层命令 / 语句
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    // 设置（通常在脚本开头）
+    Setting(Setting),
+
     // 键盘
     Down(String),              // down(1)
     Up(String),                // up(1)

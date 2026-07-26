@@ -1,0 +1,6 @@
+// 测试脚本 - 验证 setting 指令解析
+setting(audio_onlyonce)
+
+click(1)
+delay_ms(1000)
+click(2)

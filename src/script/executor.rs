@@ -79,6 +79,9 @@ impl<'a> ScriptExecutor<'a> {
 
     fn execute_command(&self, cmd: &Command) -> Result<(), String> {
         match cmd {
+            Command::Setting(_) => {
+                // 设置项在加载时已提取，执行时跳过
+            }
             Command::Down(key) => {
                 println!("[执行] down({})", key);
                 self.input.send_key_down(self.hwnd, key)?;

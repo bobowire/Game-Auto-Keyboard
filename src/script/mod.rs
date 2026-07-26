@@ -9,9 +9,10 @@ pub use token::{Token, Tokenizer};
 pub use parser::Parser;
 pub use ast::{
     Command, MouseButton, Coord, FindArea, Value, CompareOp, BoolExpr,
+    Setting,
 };
 pub use executor::ScriptExecutor;
-pub use loader::{ScriptFile, load_dir};
+pub use loader::{ScriptFile, ScriptSettings, load_dir};
 
 #[cfg(test)]
 mod tests;

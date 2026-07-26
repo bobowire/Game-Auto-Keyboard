@@ -2,6 +2,7 @@
 
 use crate::script::token::{Token, Tokenizer};
 use crate::script::ast::*;
+use crate::script::ast::Setting; // 显式导入，避免被 * 覆盖
 
 /// 如果错误信息尚未带行号（tokenizer 的错误已自带），则补上行号前缀
 fn with_line(line: u32, msg: String) -> String {
@@ -59,6 +60,17 @@ impl Parser {
     /// 解析键鼠动作命令（带括号参数）
     fn parse_action(&mut self, name: &str) -> Result<Command, String> {
         match name {
+            "setting" => {
+                self.expect(Token::LParen)?;
+                let setting_name = self.expect_ident()?;
+                self.expect(Token::RParen)?;
+
+                let setting = match setting_name.as_str() {
+                    "audio_onlyonce" => Setting::AudioOnlyOnce,
+                    other => return Err(format!("未知设置项: {}", other)),
+                };
+                Ok(Command::Setting(setting))
+            }
             "down" => {
                 let key = self.parse_paren_single_ident()?;
                 Ok(Command::Down(key))
@@ -308,6 +320,14 @@ impl Parser {
                 other => Err(format!("无效鼠标按钮: {}", other)),
             },
             other => Err(format!("期望鼠标按钮，得到 {:?}", other)),
+        }
+    }
+
+    /// 期望标识符（不接受数字）
+    fn expect_ident(&mut self) -> Result<String, String> {
+        match self.tk.next() {
+            Token::Ident(s) => Ok(s),
+            other => Err(format!("期望标识符，得到 {:?}", other)),
         }
     }
 }
