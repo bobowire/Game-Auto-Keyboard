@@ -17,7 +17,7 @@ use eframe::egui;
 use std::path::PathBuf;
 use std::time::Instant;
 
-const SCRIPTS_DIR: &str = "按键脚本";
+const SCRIPTS_DIR: &str = "scripts";
 const GRAB_COUNTDOWN_SECS: u64 = 3;
 const SLOT_COUNT: usize = 8;
 /// 唤醒词模型文件（由 wakeword_test 训练生成，放在工作目录）
@@ -1306,7 +1306,14 @@ impl App {
 
     /// 热键配置标签页
     fn ui_settings_hotkey(&mut self, ui: &mut egui::Ui, _act_save: &mut bool) {
-        ui.checkbox(&mut self.hotkey_enabled, "启用热键");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.hotkey_enabled, "启用热键");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("❓ 热键说明").clicked() {
+                    self.show_hotkey_help = true;
+                }
+            });
+        });
         ui.add_space(4.0);
 
         if !self.hotkey_enabled {
@@ -1353,6 +1360,7 @@ impl App {
         ui.label("💡 提示：");
         ui.label("• 即兴发送：按 Ctrl+Shift+Insert 进入发送模式，2秒内按任意支持的键");
         ui.label("• 热键仅在程序运行时生效，关闭后自动注销");
+        ui.label("• 点击右上角「❓ 热键说明」查看详细使用指南");
     }
 
     /// 语音帮助文档窗口
@@ -1667,9 +1675,6 @@ impl App {
                 }
                 if ui.button("🎨 取色").clicked() {
                     act_pick = true;
-                }
-                if ui.button("❓ 热键说明").clicked() {
-                    self.show_hotkey_help = true;
                 }
                 // 语音控制开关
                 let voice_on = self.voice.is_some();
