@@ -22,17 +22,6 @@ pub struct SlotConfig {
     pub marked: Option<usize>,
 }
 
-/// 应用配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppConfig {
-    /// 8 个槽位的配置
-    #[serde(default)]
-    pub slots: Vec<SlotConfig>,
-    /// 百度语音识别配置
-    #[serde(default)]
-    pub baidu: BaiduConfig,
-}
-
 /// 百度语音识别 API 配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BaiduConfig {
@@ -44,11 +33,50 @@ pub struct BaiduConfig {
     pub secret_key: String,
 }
 
+/// 热键配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotkeyConfig {
+    /// 热键总开关（禁用后所有热键不响应）
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 即兴发送热键开关（单独控制 Ctrl+Shift+Insert）
+    #[serde(default = "default_true")]
+    pub impromptu_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for HotkeyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            impromptu_enabled: true,
+        }
+    }
+}
+
+/// 应用配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    /// 8 个槽位的配置
+    #[serde(default)]
+    pub slots: Vec<SlotConfig>,
+    /// 百度语音识别配置
+    #[serde(default)]
+    pub baidu: BaiduConfig,
+    /// 热键配置
+    #[serde(default)]
+    pub hotkey: HotkeyConfig,
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             slots: vec![SlotConfig::default(); 8],
             baidu: BaiduConfig::default(),
+            hotkey: HotkeyConfig::default(),
         }
     }
 }

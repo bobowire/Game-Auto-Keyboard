@@ -69,11 +69,26 @@ pub struct App {
     baidu_secret_key: String,
     // 最近一次语音识别文本（UI 展示）
     last_voice_text: String,
-    // 是否显示语音设置窗口
-    show_voice_settings: bool,
+
+    // 热键配置（编辑用），从 config 加载
+    hotkey_enabled: bool,
+    hotkey_impromptu_enabled: bool,
+
+    // 统一配置窗口
+    show_settings: bool,
+    settings_tab: SettingsTab,
+    // 是否显示语音帮助文档窗口
+    show_voice_help: bool,
 
     // 状态提示
     status: String,
+}
+
+/// 配置窗口标签页
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SettingsTab {
+    Voice,
+    Hotkey,
 }
 
 impl App {
@@ -151,7 +166,11 @@ impl App {
             baidu_api_key: config.baidu.api_key.clone(),
             baidu_secret_key: config.baidu.secret_key.clone(),
             last_voice_text: String::new(),
-            show_voice_settings: false,
+            hotkey_enabled: config.hotkey.enabled,
+            hotkey_impromptu_enabled: config.hotkey.impromptu_enabled,
+            show_settings: false,
+            settings_tab: SettingsTab::Voice,
+            show_voice_help: false,
             status,
         }
     }
@@ -183,6 +202,8 @@ impl App {
         }
         cfg.baidu.api_key = self.baidu_api_key.clone();
         cfg.baidu.secret_key = self.baidu_secret_key.clone();
+        cfg.hotkey.enabled = self.hotkey_enabled;
+        cfg.hotkey.impromptu_enabled = self.hotkey_impromptu_enabled;
         if let Err(e) = cfg.save() {
             eprintln!("保存配置失败: {}", e);
         }
@@ -673,7 +694,8 @@ impl eframe::App for App {
         self.ui_source_panel(ctx);
         self.ui_add_scheme_window(ctx);
         self.ui_hotkey_help_window(ctx);
-        self.ui_voice_settings_window(ctx);
+        self.ui_settings_window(ctx);
+        self.ui_voice_help_window(ctx);
         self.color_picker.ui(ctx);
         self.ui_central(ctx);
     }
@@ -949,93 +971,202 @@ impl App {
     }
 
     /// 语音设置窗口：百度密钥 + 使用说明
-    fn ui_voice_settings_window(&mut self, ctx: &egui::Context) {
-        if !self.show_voice_settings {
+
+    /// 统一配置窗口
+    fn ui_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.show_settings {
             return;
         }
         let mut open = true;
         let mut act_save = false;
-        egui::Window::new("🎤 语音控制设置")
+
+        egui::Window::new("⚙ 设置")
             .collapsible(false)
             .resizable(true)
-            .default_width(460.0)
+            .default_width(500.0)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new("百度语音识别密钥（在百度智能云控制台申请）")
-                        .strong(),
-                );
-                ui.add_space(4.0);
-                egui::Grid::new("baidu_keys").num_columns(2).show(ui, |ui| {
-                    ui.label("API Key:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.baidu_api_key)
-                            .desired_width(300.0)
-                            .password(true),
-                    );
-                    ui.end_row();
-                    ui.label("Secret Key:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.baidu_secret_key)
-                            .desired_width(300.0)
-                            .password(true),
-                    );
-                    ui.end_row();
-                });
-                ui.add_space(4.0);
-                if ui.button("💾 保存密钥").clicked() {
-                    act_save = true;
-                }
-
-                ui.separator();
-                let model_ok = std::path::Path::new(WAKEWORD_MODEL_PATH).exists();
+                // 标签页选择
                 ui.horizontal(|ui| {
-                    ui.label("唤醒词模型:");
-                    if model_ok {
-                        ui.colored_label(egui::Color32::GREEN, format!("✓ {}", WAKEWORD_MODEL_PATH));
-                    } else {
-                        ui.colored_label(
-                            egui::Color32::RED,
-                            format!("✗ 缺失 {}（请先用 wakeword_test 训练）", WAKEWORD_MODEL_PATH),
-                        );
-                    }
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::Voice, "🎤 语音控制");
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::Hotkey, "⌨️ 热键配置");
                 });
+                ui.separator();
 
-                if !self.last_voice_text.is_empty() {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label("最近识别:");
-                        ui.colored_label(
-                            egui::Color32::LIGHT_BLUE,
-                            &self.last_voice_text,
-                        );
-                    });
+                match self.settings_tab {
+                    SettingsTab::Voice => self.ui_settings_voice(ui, &mut act_save),
+                    SettingsTab::Hotkey => self.ui_settings_hotkey(ui, &mut act_save),
                 }
 
                 ui.separator();
-                ui.collapsing("📖 语音指令说明", |ui| {
-                    ui.label("说唤醒词「小助手」后接指令，例如：");
-                    ui.monospace("  小助手，窗口1跟随我");
-                    ui.label("  → 窗口1执行名字含「跟随」的脚本");
-                    ui.monospace("  小助手，窗口1加血");
-                    ui.label("  → 窗口1执行名字含「加血」的脚本");
-                    ui.monospace("  小助手，窗口1停止");
-                    ui.label("  → 停止窗口1");
-                    ui.monospace("  小助手，所有人停止");
-                    ui.label("  → 停止全部窗口");
-                    ui.add_space(4.0);
-                    ui.label("• 脚本需先在对应窗口「+ 添加方案」");
-                    ui.label("• 窗口名可在各槽位标题处编辑（如改成「主号」）");
-                    ui.label("• 动作按脚本名（去扩展名）包含匹配");
+                ui.horizontal(|ui| {
+                    if ui.button("💾 保存").clicked() {
+                        act_save = true;
+                    }
                 });
             });
 
         if act_save {
             self.save_config();
-            self.status = "百度密钥已保存".to_string();
+            self.status = "配置已保存".to_string();
         }
         if !open {
-            self.show_voice_settings = false;
+            self.show_settings = false;
+        }
+    }
+
+    /// 语音配置标签页
+    fn ui_settings_voice(&mut self, ui: &mut egui::Ui, _act_save: &mut bool) {
+        ui.label(
+            egui::RichText::new("百度语音识别密钥（在百度智能云控制台申请）")
+                .strong(),
+        );
+        ui.add_space(4.0);
+        egui::Grid::new("baidu_keys").num_columns(2).show(ui, |ui| {
+            ui.label("API Key:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.baidu_api_key)
+                    .desired_width(320.0)
+                    .password(true),
+            );
+            ui.end_row();
+            ui.label("Secret Key:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.baidu_secret_key)
+                    .desired_width(320.0)
+                    .password(true),
+            );
+            ui.end_row();
+        });
+
+        ui.add_space(8.0);
+        let model_ok = std::path::Path::new(WAKEWORD_MODEL_PATH).exists();
+        ui.horizontal(|ui| {
+            ui.label("唤醒词模型:");
+            if model_ok {
+                ui.colored_label(egui::Color32::GREEN, format!("✓ {}", WAKEWORD_MODEL_PATH));
+            } else {
+                ui.colored_label(
+                    egui::Color32::RED,
+                    format!("✗ 缺失 {}（请先用 wakeword_test 训练）", WAKEWORD_MODEL_PATH),
+                );
+            }
+        });
+
+        if !self.last_voice_text.is_empty() {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("最近识别:");
+                ui.colored_label(
+                    egui::Color32::LIGHT_BLUE,
+                    &self.last_voice_text,
+                );
+            });
+        }
+
+        ui.add_space(8.0);
+        if ui.button("📖 查看语音指令帮助").clicked() {
+            self.show_voice_help = true;
+        }
+    }
+
+    /// 热键配置标签页
+    fn ui_settings_hotkey(&mut self, ui: &mut egui::Ui, _act_save: &mut bool) {
+        ui.checkbox(&mut self.hotkey_enabled, "启用热键");
+        ui.add_space(4.0);
+
+        if !self.hotkey_enabled {
+            ui.colored_label(egui::Color32::YELLOW, "⚠ 热键已全局禁用");
+            ui.add_space(4.0);
+        }
+
+        ui.label(egui::RichText::new("已注册热键列表").strong());
+        ui.add_space(4.0);
+
+        egui::Grid::new("hotkey_list")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("功能");
+                ui.label("热键");
+                ui.end_row();
+
+                ui.label("窗口选择");
+                ui.monospace("Ctrl+Shift+1~8");
+                ui.end_row();
+
+                ui.label("循环启动");
+                ui.monospace("Ctrl+Shift+9");
+                ui.end_row();
+
+                ui.label("全部停止");
+                ui.monospace("Ctrl+Shift+0");
+                ui.end_row();
+
+                ui.label("单次执行");
+                ui.monospace("Ctrl+Shift+- (减号)");
+                ui.end_row();
+
+                ui.label("即兴发送");
+                ui.horizontal(|ui| {
+                    ui.monospace("Ctrl+Shift+Insert + [A-Z/0-9/F1-F12/Space]");
+                    ui.checkbox(&mut self.hotkey_impromptu_enabled, "");
+                });
+                ui.end_row();
+            });
+
+        ui.add_space(8.0);
+        ui.label("💡 提示：");
+        ui.label("• 即兴发送：按 Ctrl+Shift+Insert 进入发送模式，2秒内按任意支持的键");
+        ui.label("• 热键仅在程序运行时生效，关闭后自动注销");
+    }
+
+    /// 语音帮助文档窗口
+    fn ui_voice_help_window(&mut self, ctx: &egui::Context) {
+        if !self.show_voice_help {
+            return;
+        }
+        let mut open = true;
+
+        egui::Window::new("📖 语音指令帮助")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(480.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.heading("支持的语音指令");
+                    ui.add_space(8.0);
+
+                    ui.label(egui::RichText::new("1. 执行动作").strong());
+                    ui.monospace("  小助手，窗口1跟随我");
+                    ui.label("  → 窗口1执行名字含「跟随」的脚本");
+                    ui.monospace("  小助手，窗口1加血");
+                    ui.label("  → 窗口1执行名字含「加血」的脚本");
+                    ui.add_space(4.0);
+
+                    ui.label(egui::RichText::new("2. 停止指令").strong());
+                    ui.monospace("  小助手，所有人停止");
+                    ui.label("  → 停止全部窗口");
+                    ui.monospace("  小助手，窗口1停止");
+                    ui.label("  → 停止窗口1");
+                    ui.add_space(8.0);
+
+                    ui.label(egui::RichText::new("使用说明").strong());
+                    ui.label("• 脚本需先在对应窗口「+ 添加方案」");
+                    ui.label("• 窗口名可在各槽位标题处编辑（如改成「主号」）");
+                    ui.label("• 动作按脚本名（去扩展名）包含匹配，优先匹配度高的");
+                    ui.label("• 支持中文数字：「窗口一」自动识别为「窗口1」");
+                    ui.add_space(8.0);
+
+                    ui.label(egui::RichText::new("故障排查").strong());
+                    ui.label("• 查看日志文件 voice_debug.log 了解识别过程");
+                    ui.label("• 详细排查指南见 VOICE_DEBUG.md");
+                });
+            });
+
+        if !open {
+            self.show_voice_help = false;
         }
     }
 
@@ -1079,8 +1210,8 @@ impl App {
                 {
                     act_toggle_voice = true;
                 }
-                if ui.button("⚙ 语音设置").clicked() {
-                    self.show_voice_settings = true;
+                if ui.button("⚙ 设置").clicked() {
+                    self.show_settings = true;
                 }
                 ui.separator();
                 if ui.button("▶ 全部启动").clicked() {
