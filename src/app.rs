@@ -1195,69 +1195,77 @@ impl App {
         if !self.show_baidu_guide {
             return;
         }
-        let mut open = true;
 
-        egui::Window::new("📝 如何申请百度语音识别密钥")
-            .collapsible(false)
-            .resizable(true)
-            .default_width(500.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.heading("百度智能云控制台");
-                ui.add_space(4.0);
+        let viewport_id = egui::ViewportId::from_hash_of("baidu_guide_viewport");
+        let builder = egui::ViewportBuilder::default()
+            .with_title("📝 如何申请百度语音识别密钥")
+            .with_inner_size([520.0, 600.0]);
 
-                ui.label("点击下方链接打开百度智能云控制台：");
-                ui.hyperlink_to(
-                    "🔗 https://console.bce.baidu.com/ai/#/ai/speech/overview/index",
-                    "https://console.bce.baidu.com/ai/#/ai/speech/overview/index"
-                );
+        let mut should_close = false;
+        ctx.show_viewport_immediate(viewport_id, builder, |ctx, _class| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.heading("百度智能云控制台");
+                    ui.add_space(4.0);
 
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
+                    ui.label("点击下方链接打开百度智能云控制台：");
+                    ui.hyperlink_to(
+                        "🔗 https://console.bce.baidu.com/ai/#/ai/speech/overview/index",
+                        "https://console.bce.baidu.com/ai/#/ai/speech/overview/index"
+                    );
 
-                ui.label(egui::RichText::new("申请步骤：").strong());
-                ui.add_space(4.0);
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
 
-                ui.label("1️⃣ 登录百度账号（没有则先注册）");
-                ui.add_space(2.0);
+                    ui.label(egui::RichText::new("申请步骤：").strong());
+                    ui.add_space(4.0);
 
-                ui.label("2️⃣ 进入「语音技术」→「短语音识别」");
-                ui.add_space(2.0);
+                    ui.label("1️⃣ 登录百度账号（没有则先注册）");
+                    ui.add_space(2.0);
 
-                ui.label("3️⃣ 点击「创建应用」");
-                ui.add_space(2.0);
+                    ui.label("2️⃣ 进入「语音技术」→「短语音识别」");
+                    ui.add_space(2.0);
 
-                ui.label("4️⃣ 填写应用信息：");
-                ui.indent("app_info", |ui| {
-                    ui.label("• 应用名称：随意填写（如「游戏助手」）");
-                    ui.label("• 接口选择：勾选「短语音识别」");
-                    ui.label("• 应用归属：个人");
+                    ui.label("3️⃣ 点击「创建应用」");
+                    ui.add_space(2.0);
+
+                    ui.label("4️⃣ 填写应用信息：");
+                    ui.indent("app_info", |ui| {
+                        ui.label("• 应用名称：随意填写（如「游戏助手」）");
+                        ui.label("• 接口选择：勾选「短语音识别」");
+                        ui.label("• 应用归属：个人");
+                    });
+                    ui.add_space(2.0);
+
+                    ui.label("5️⃣ 创建成功后，在应用列表查看：");
+                    ui.indent("keys", |ui| {
+                        ui.label("• API Key（复制到设置窗口）");
+                        ui.label("• Secret Key（复制到设置窗口）");
+                    });
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    ui.label("💡 提示：");
+                    ui.label("• 每个账号有免费额度（每天50,000次调用）");
+                    ui.label("• 超出免费额度后按次计费");
+                    ui.label("• 详细定价见官网文档");
+
+                    ui.add_space(12.0);
+                    if ui.button("✅ 我已了解").clicked() {
+                        should_close = true;
+                    }
                 });
-                ui.add_space(2.0);
-
-                ui.label("5️⃣ 创建成功后，在应用列表查看：");
-                ui.indent("keys", |ui| {
-                    ui.label("• API Key（复制到设置窗口）");
-                    ui.label("• Secret Key（复制到设置窗口）");
-                });
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.label("💡 提示：");
-                ui.label("• 每个账号有免费额度（每天50,000次调用）");
-                ui.label("• 超出免费额度后按次计费");
-                ui.label("• 详细定价见官网文档");
-
-                ui.add_space(12.0);
-                if ui.button("✅ 我已了解").clicked() {
-                    self.show_baidu_guide = false;
-                }
             });
 
-        if !open {
+            if ctx.input(|i| i.viewport().close_requested()) {
+                should_close = true;
+            }
+        });
+
+        if should_close {
             self.show_baidu_guide = false;
         }
     }
@@ -1267,80 +1275,87 @@ impl App {
         if !self.show_wakeword_guide {
             return;
         }
-        let mut open = true;
 
-        egui::Window::new("🎤 唤醒词训练指南")
-            .collapsible(false)
-            .resizable(true)
-            .default_width(480.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.heading("需要训练唤醒词模型");
-                ui.add_space(4.0);
+        let viewport_id = egui::ViewportId::from_hash_of("wakeword_guide_viewport");
+        let builder = egui::ViewportBuilder::default()
+            .with_title("🎤 唤醒词训练指南")
+            .with_inner_size([520.0, 600.0]);
 
-                ui.label("语音控制需要先训练唤醒词「小助手」，生成识别模型。");
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
+        let mut should_close = false;
+        ctx.show_viewport_immediate(viewport_id, builder, |ctx, _class| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.heading("需要训练唤醒词模型");
+                    ui.add_space(4.0);
 
-                ui.label(egui::RichText::new("训练步骤：").strong());
-                ui.add_space(4.0);
+                    ui.label("语音控制需要先训练唤醒词「小助手」，生成识别模型。");
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
 
-                ui.label("1️⃣ 关闭当前程序");
-                ui.add_space(2.0);
+                    ui.label(egui::RichText::new("训练步骤：").strong());
+                    ui.add_space(4.0);
 
-                ui.label("2️⃣ 打开命令行（cmd），进入项目目录");
-                ui.add_space(2.0);
+                    ui.label("1️⃣ 关闭当前程序");
+                    ui.add_space(2.0);
 
-                ui.label("3️⃣ 运行训练工具：");
-                ui.add_space(4.0);
-                ui.indent("cmd", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.monospace("cargo run --example wakeword_test --release");
-                        if ui.button("📋 复制").clicked() {
-                            ui.output_mut(|o| {
-                                o.copied_text = "cargo run --example wakeword_test --release".to_string();
-                            });
-                            self.status = "命令已复制到剪贴板".to_string();
-                        }
+                    ui.label("2️⃣ 打开命令行（cmd），进入项目目录");
+                    ui.add_space(2.0);
+
+                    ui.label("3️⃣ 运行训练工具：");
+                    ui.add_space(4.0);
+                    ui.indent("cmd", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.monospace("cargo run --example wakeword_test --release");
+                            if ui.button("📋 复制").clicked() {
+                                ui.output_mut(|o| {
+                                    o.copied_text = "cargo run --example wakeword_test --release".to_string();
+                                });
+                            }
+                        });
+                        ui.label("或使用 build.bat 选择 [a] wakeword_test");
                     });
-                    ui.label("或使用 build.bat 选择 [a] wakeword_test");
+                    ui.add_space(4.0);
+
+                    ui.label("4️⃣ 按提示录制 4 遍「小助手」");
+                    ui.indent("record", |ui| {
+                        ui.label("• 每次录制 2 秒");
+                        ui.label("• 环境安静，说话清晰");
+                        ui.label("• 4 遍读音保持一致");
+                    });
+                    ui.add_space(2.0);
+
+                    ui.label("5️⃣ 训练完成后生成模型文件：");
+                    ui.add_space(4.0);
+                    ui.indent("output", |ui| {
+                        ui.colored_label(egui::Color32::GREEN, "wakeword_model.rpw");
+                    });
+                    ui.add_space(4.0);
+
+                    ui.label("6️⃣ 重新打开本程序，再次点击语音开关");
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    ui.label("💡 提示：");
+                    ui.label("• 训练只需一次，模型文件可重复使用");
+                    ui.label("• 如果识别不准，可重新训练");
+                    ui.label("• 训练时麦克风不要被其他程序占用");
+
+                    ui.add_space(12.0);
+                    if ui.button("✅ 我已了解").clicked() {
+                        should_close = true;
+                    }
                 });
-                ui.add_space(4.0);
-
-                ui.label("4️⃣ 按提示录制 4 遍「小助手」");
-                ui.indent("record", |ui| {
-                    ui.label("• 每次录制 2 秒");
-                    ui.label("• 环境安静，说话清晰");
-                    ui.label("• 4 遍读音保持一致");
-                });
-                ui.add_space(2.0);
-
-                ui.label("5️⃣ 训练完成后生成模型文件：");
-                ui.add_space(4.0);
-                ui.indent("output", |ui| {
-                    ui.colored_label(egui::Color32::GREEN, "wakeword_model.rpw");
-                });
-                ui.add_space(4.0);
-
-                ui.label("6️⃣ 重新打开本程序，再次点击语音开关");
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.label("💡 提示：");
-                ui.label("• 训练只需一次，模型文件可重复使用");
-                ui.label("• 如果识别不准，可重新训练");
-                ui.label("• 训练时麦克风不要被其他程序占用");
-
-                ui.add_space(12.0);
-                if ui.button("✅ 我已了解").clicked() {
-                    self.show_wakeword_guide = false;
-                }
             });
 
-        if !open {
+            if ctx.input(|i| i.viewport().close_requested()) {
+                should_close = true;
+            }
+        });
+
+        if should_close {
             self.show_wakeword_guide = false;
         }
     }
