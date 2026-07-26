@@ -44,6 +44,14 @@ pub struct HotkeyConfig {
     pub impromptu_enabled: bool,
 }
 
+/// 通用配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneralConfig {
+    /// 日志文件开关（禁用后不写入 vlog.txt）
+    #[serde(default = "default_true")]
+    pub log_enabled: bool,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -53,6 +61,14 @@ impl Default for HotkeyConfig {
         Self {
             enabled: true,
             impromptu_enabled: true,
+        }
+    }
+}
+
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        Self {
+            log_enabled: true,
         }
     }
 }
@@ -69,6 +85,9 @@ pub struct AppConfig {
     /// 热键配置
     #[serde(default)]
     pub hotkey: HotkeyConfig,
+    /// 通用配置
+    #[serde(default)]
+    pub general: GeneralConfig,
 }
 
 impl Default for AppConfig {
@@ -77,6 +96,7 @@ impl Default for AppConfig {
             slots: vec![SlotConfig::default(); 8],
             baidu: BaiduConfig::default(),
             hotkey: HotkeyConfig::default(),
+            general: GeneralConfig::default(),
         }
     }
 }

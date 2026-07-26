@@ -9,7 +9,7 @@ use crate::tray::{Tray, TrayCommand};
 use crate::utils::win32;
 use crate::vlog;
 use crate::voice::{
-    match_script, parse_intent, AudioCapture, VoiceConfig, VoiceEvent, VoiceIntent, VoiceRuntime,
+    match_script, parse_intent, vlog, AudioCapture, VoiceConfig, VoiceEvent, VoiceIntent, VoiceRuntime,
     train_wakeword, trim_silence, TARGET_SAMPLE_RATE,
 };
 use crate::window_slot::{Scheme, WindowSlot};
@@ -75,6 +75,9 @@ pub struct App {
     hotkey_enabled: bool,
     hotkey_impromptu_enabled: bool,
 
+    // 通用配置（编辑用），从 config 加载
+    log_enabled: bool,
+
     // 统一配置窗口
     show_settings: bool,
     settings_tab: SettingsTab,
@@ -107,6 +110,7 @@ struct WakewordTrainingState {
 /// 配置窗口标签页
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SettingsTab {
+    General,
     Voice,
     Hotkey,
 }
@@ -166,6 +170,9 @@ impl App {
             }
         };
 
+        // 初始化日志开关
+        vlog::set_enabled(config.general.log_enabled);
+
         Self {
             scripts,
             scripts_dir,
@@ -188,8 +195,9 @@ impl App {
             last_voice_text: String::new(),
             hotkey_enabled: config.hotkey.enabled,
             hotkey_impromptu_enabled: config.hotkey.impromptu_enabled,
+            log_enabled: config.general.log_enabled,
             show_settings: false,
-            settings_tab: SettingsTab::Voice,
+            settings_tab: SettingsTab::General,
             show_voice_help: false,
             show_baidu_guide: false,
             show_wakeword_guide: false,
@@ -227,6 +235,11 @@ impl App {
         cfg.baidu.secret_key = self.baidu_secret_key.clone();
         cfg.hotkey.enabled = self.hotkey_enabled;
         cfg.hotkey.impromptu_enabled = self.hotkey_impromptu_enabled;
+        cfg.general.log_enabled = self.log_enabled;
+
+        // 同步日志开关到 vlog 模块
+        vlog::set_enabled(self.log_enabled);
+
         if let Err(e) = cfg.save() {
             eprintln!("保存配置失败: {}", e);
         }
@@ -825,7 +838,7 @@ impl App {
                 // 发送模式提示
                 if self.hotkey_sm.in_send_mode() {
                     ui.colored_label(
-                        egui::Color32::from_rgb(255, 200, 0),
+                        egui::Color32::from_rgb(255, 140, 0),
                         "🎯 发送模式激活中（2秒内按任意键）",
                     );
                     ui.separator();
@@ -836,7 +849,7 @@ impl App {
                 if !sel.is_empty() {
                     let list: Vec<String> = sel.iter().map(|n| n.to_string()).collect();
                     ui.colored_label(
-                        egui::Color32::YELLOW,
+                        egui::Color32::from_rgb(200, 120, 0),
                         format!("已选窗口 [{}]，按 Ctrl+Shift+9 启动 / +0 停止", list.join(",")),
                     );
                     ui.separator();
@@ -1093,12 +1106,14 @@ impl App {
             .show(ctx, |ui| {
                 // 标签页选择
                 ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "🔧 通用");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::Voice, "🎤 语音控制");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::Hotkey, "⌨️ 热键配置");
                 });
                 ui.separator();
 
                 match self.settings_tab {
+                    SettingsTab::General => self.ui_settings_general(ui, &mut act_save),
                     SettingsTab::Voice => self.ui_settings_voice(ui, &mut act_save),
                     SettingsTab::Hotkey => self.ui_settings_hotkey(ui, &mut act_save),
                 }
@@ -1117,6 +1132,24 @@ impl App {
         }
         if !open {
             self.show_settings = false;
+        }
+    }
+
+    /// 通用配置标签页
+    fn ui_settings_general(&mut self, ui: &mut egui::Ui, _act_save: &mut bool) {
+        ui.label(egui::RichText::new("日志设置").strong());
+        ui.add_space(4.0);
+
+        ui.checkbox(&mut self.log_enabled, "启用日志文件");
+        ui.add_space(2.0);
+        ui.label("禁用后将不会写入 vlog.txt 日志文件");
+
+        if !self.log_enabled {
+            ui.add_space(4.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 120, 0),
+                "⚠ 日志已禁用，问题排查将受限"
+            );
         }
     }
 
@@ -1193,7 +1226,7 @@ impl App {
         ui.add_space(4.0);
 
         if !self.hotkey_enabled {
-            ui.colored_label(egui::Color32::YELLOW, "⚠ 热键已全局禁用");
+            ui.colored_label(egui::Color32::from_rgb(200, 120, 0), "⚠ 热键已全局禁用");
             ui.add_space(4.0);
         }
 
@@ -1324,7 +1357,7 @@ impl App {
                     ui.label("2️⃣ 完成实名认证（必须，否则无免费额度）");
                     ui.indent("auth_tip", |ui| {
                         ui.colored_label(
-                            egui::Color32::from_rgb(255, 165, 0),
+                            egui::Color32::from_rgb(200, 80, 0),
                             "⚠ 未实名认证的账号无法使用免费额度"
                         );
                     });
