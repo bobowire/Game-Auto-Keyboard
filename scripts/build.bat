@@ -73,9 +73,22 @@ if errorlevel 1 goto DONE
 echo.
 echo [Deploy] Copying to build directory...
 echo ----------------------------------------
+REM Clean build directory (keep only exe and runtime files)
+if exist build\game-auto-keyboard.exe del /Q build\game-auto-keyboard.exe
+if exist build\.rustc_info.json del /Q build\.rustc_info.json
+if exist build\CACHEDIR.TAG del /Q build\CACHEDIR.TAG
+if exist build\debug rmdir /S /Q build\debug
+if exist build\release rmdir /S /Q build\release
+if exist build\flycheck0 rmdir /S /Q build\flycheck0
+
+REM Create build directory if not exists
 if not exist build mkdir build
+
+REM Copy only the executable
 copy /Y target\debug\game-auto-keyboard.exe build\
 echo Deployed to: build\game-auto-keyboard.exe
+echo.
+echo NOTE: Runtime files (config.json, wakeword_model.rpw, scripts/) are preserved.
 goto DONE
 
 :RELEASE
@@ -88,9 +101,22 @@ if errorlevel 1 goto DONE
 echo.
 echo [Deploy] Copying to build directory...
 echo ----------------------------------------
+REM Clean build directory (keep only exe and runtime files)
+if exist build\game-auto-keyboard.exe del /Q build\game-auto-keyboard.exe
+if exist build\.rustc_info.json del /Q build\.rustc_info.json
+if exist build\CACHEDIR.TAG del /Q build\CACHEDIR.TAG
+if exist build\debug rmdir /S /Q build\debug
+if exist build\release rmdir /S /Q build\release
+if exist build\flycheck0 rmdir /S /Q build\flycheck0
+
+REM Create build directory if not exists
 if not exist build mkdir build
+
+REM Copy only the executable
 copy /Y target\release\game-auto-keyboard.exe build\
 echo Deployed to: build\game-auto-keyboard.exe
+echo.
+echo NOTE: Runtime files (config.json, wakeword_model.rpw, scripts/) are preserved.
 goto DONE
 
 :RUN
