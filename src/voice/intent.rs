@@ -117,27 +117,54 @@ pub fn parse_intent(text: &str, windows: &[(usize, String)]) -> Option<VoiceInte
 
 /// 在给定脚本名列表中，找出与动作文本匹配的脚本索引。
 ///
-/// 匹配规则：脚本名去掉扩展名后的主名若是动作文本的子串即命中
-/// （如脚本"跟随.ag"，动作"跟随我"含"跟随" → 命中）。
-/// 有多个命中时取主名最长者，更精确。
+/// 匹配规则：脚本名（去扩展名）包含动作中的任意连续子串，计算匹配度（匹配长度/脚本名长度）。
+/// 取匹配度最高的脚本。如果匹配度相同，取脚本名最短的（更精确）。
+///
+/// 例如：
+/// - 动作 "跟随我"，脚本 ["蜀门-自动跟随.ag", "跟随.ag"]
+/// - "蜀门-自动跟随" 包含 "跟随" → 匹配度 2/7 ≈ 0.29
+/// - "跟随" 包含 "跟随" → 匹配度 2/2 = 1.0
+/// - 选择 "跟随.ag"
 pub fn match_script<'a, I>(action: &str, script_names: I) -> Option<usize>
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let mut best: Option<(usize, usize)> = None; // (索引, 主名长度)
+    let mut best: Option<(usize, f32, usize)> = None; // (索引, 匹配度, 脚本名长度)
+
     for (i, name) in script_names.into_iter().enumerate() {
         let base = name.rsplit_once('.').map(|(b, _)| b).unwrap_or(name);
         if base.is_empty() {
             continue;
         }
-        if action.contains(base) {
-            let len = base.chars().count();
-            if best.map_or(true, |(_, bl)| len > bl) {
-                best = Some((i, len));
+
+        // 转换为字符数组以安全处理中文
+        let action_chars: Vec<char> = action.chars().collect();
+
+        // 在脚本名中找动作的最长公共子串
+        let mut max_match_len = 0;
+        for start in 0..action_chars.len() {
+            for end in start + 1..=action_chars.len() {
+                let substr: String = action_chars[start..end].iter().collect();
+                if base.contains(&substr) && substr.chars().count() > max_match_len {
+                    max_match_len = substr.chars().count();
+                }
             }
         }
+
+        if max_match_len == 0 {
+            continue; // 无匹配
+        }
+
+        let base_len = base.chars().count();
+        let ratio = max_match_len as f32 / base_len as f32;
+
+        // 更新最佳匹配（优先匹配度高，其次脚本名短）
+        if best.map_or(true, |(_, r, len)| ratio > r || (ratio == r && base_len < len)) {
+            best = Some((i, ratio, base_len));
+        }
     }
-    best.map(|(i, _)| i)
+
+    best.map(|(i, _, _)| i)
 }
 
 #[cfg(test)]
@@ -239,5 +266,15 @@ mod tests {
         assert_eq!(match_script("跟随我", scripts.iter().copied()), Some(0));
         assert_eq!(match_script("快加血", scripts.iter().copied()), Some(1));
         assert_eq!(match_script("原地不动", scripts.iter().copied()), None);
+    }
+
+    #[test]
+    fn script_matching_with_prefix() {
+        // 新测试：带前缀的脚本名也能匹配
+        let scripts = vec!["蜀门-自动跟随.ag", "跟随.ag", "加血.ag"];
+        // "跟随我"应匹配"跟随.ag"（匹配度100%）而非"蜀门-自动跟随.ag"（匹配度约29%）
+        assert_eq!(match_script("跟随我", scripts.iter().copied()), Some(1));
+        // "自动跟随"应匹配"蜀门-自动跟随.ag"（匹配度更高）
+        assert_eq!(match_script("自动跟随", scripts.iter().copied()), Some(0));
     }
 }
