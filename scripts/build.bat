@@ -74,7 +74,6 @@ echo.
 echo [Deploy] Copying to build directory...
 echo ----------------------------------------
 REM Clean build directory (keep only exe and runtime files)
-if exist build\game-auto-keyboard.exe del /Q build\game-auto-keyboard.exe
 if exist build\.rustc_info.json del /Q build\.rustc_info.json
 if exist build\CACHEDIR.TAG del /Q build\CACHEDIR.TAG
 if exist build\debug rmdir /S /Q build\debug
@@ -87,14 +86,12 @@ if not exist build mkdir build
 REM Copy the executable
 copy /Y target\debug\game-auto-keyboard.exe build\
 
-REM Copy example scripts to "按键脚本" directory
+REM Copy example scripts
 if not exist "build\按键脚本" mkdir "build\按键脚本"
 if exist scripts\example.ag copy /Y scripts\example.ag "build\按键脚本\"
 
 echo Deployed to: build\game-auto-keyboard.exe
 echo Example scripts copied to: build\按键脚本\
-echo.
-echo NOTE: Runtime files (config.json, wakeword_model.rpw) are preserved.
 goto DONE
 
 :RELEASE
@@ -108,7 +105,6 @@ echo.
 echo [Deploy] Copying to build directory...
 echo ----------------------------------------
 REM Clean build directory (keep only exe and runtime files)
-if exist build\game-auto-keyboard.exe del /Q build\game-auto-keyboard.exe
 if exist build\.rustc_info.json del /Q build\.rustc_info.json
 if exist build\CACHEDIR.TAG del /Q build\CACHEDIR.TAG
 if exist build\debug rmdir /S /Q build\debug
@@ -121,14 +117,12 @@ if not exist build mkdir build
 REM Copy the executable
 copy /Y target\release\game-auto-keyboard.exe build\
 
-REM Copy example scripts to "按键脚本" directory
+REM Copy example scripts
 if not exist "build\按键脚本" mkdir "build\按键脚本"
 if exist scripts\example.ag copy /Y scripts\example.ag "build\按键脚本\"
 
 echo Deployed to: build\game-auto-keyboard.exe
 echo Example scripts copied to: build\按键脚本\
-echo.
-echo NOTE: Runtime files (config.json, wakeword_model.rpw) are preserved.
 goto DONE
 
 :RUN
