@@ -7,6 +7,10 @@ use crate::runner::Runner;
 use crate::script::{load_dir, ScriptFile};
 use crate::tray::{Tray, TrayCommand};
 use crate::utils::win32;
+use crate::vlog;
+use crate::voice::{
+    match_script, parse_intent, VoiceConfig, VoiceEvent, VoiceIntent, VoiceRuntime,
+};
 use crate::window_slot::{Scheme, WindowSlot};
 use eframe::egui;
 use std::path::PathBuf;
@@ -15,6 +19,10 @@ use std::time::Instant;
 const SCRIPTS_DIR: &str = "scripts";
 const GRAB_COUNTDOWN_SECS: u64 = 3;
 const SLOT_COUNT: usize = 8;
+/// 唤醒词模型文件（由 wakeword_test 训练生成，放在工作目录）
+const WAKEWORD_MODEL_PATH: &str = "wakeword_model.rpw";
+/// 唤醒阈值
+const WAKEWORD_THRESHOLD: f32 = 0.5;
 
 pub struct App {
     // 脚本列表（全局候选池）
@@ -54,6 +62,16 @@ pub struct App {
     // 是否正在真正退出（托盘“退出”触发），用于放行关闭请求
     quitting: bool,
 
+    // 语音控制运行时（None 表示未开启）
+    voice: Option<VoiceRuntime>,
+    // 百度语音配置（编辑用），从 config 加载
+    baidu_api_key: String,
+    baidu_secret_key: String,
+    // 最近一次语音识别文本（UI 展示）
+    last_voice_text: String,
+    // 是否显示语音设置窗口
+    show_voice_settings: bool,
+
     // 状态提示
     status: String,
 }
@@ -68,7 +86,12 @@ impl App {
         let mut slots = Vec::with_capacity(SLOT_COUNT);
         for i in 0..SLOT_COUNT {
             let mut slot = WindowSlot::default();
+            // 默认名"窗口N"，配置里有非空自定义名则覆盖
+            slot.name = format!("窗口{}", i + 1);
             if let Some(sc) = config.slots.get(i) {
+                if !sc.name.trim().is_empty() {
+                    slot.name = sc.name.clone();
+                }
                 for name in &sc.scheme_names {
                     if let Some(sf) = scripts.iter().find(|s| &s.name == name) {
                         if let Some(cmds) = &sf.commands {
@@ -124,6 +147,11 @@ impl App {
             hotkey_sm: HotkeyStateMachine::new(),
             tray,
             quitting: false,
+            voice: None,
+            baidu_api_key: config.baidu.api_key.clone(),
+            baidu_secret_key: config.baidu.secret_key.clone(),
+            last_voice_text: String::new(),
+            show_voice_settings: false,
             status,
         }
     }
@@ -143,10 +171,18 @@ impl App {
     fn save_config(&self) {
         let mut cfg = AppConfig::default();
         for (i, slot) in self.slots.iter().enumerate() {
+            // 与默认"窗口N"相同则存空串，保持配置干净
+            cfg.slots[i].name = if slot.name == format!("窗口{}", i + 1) {
+                String::new()
+            } else {
+                slot.name.clone()
+            };
             cfg.slots[i].scheme_names =
                 slot.schemes.iter().map(|s| s.script_name.clone()).collect();
             cfg.slots[i].marked = slot.marked;
         }
+        cfg.baidu.api_key = self.baidu_api_key.clone();
+        cfg.baidu.secret_key = self.baidu_secret_key.clone();
         if let Err(e) = cfg.save() {
             eprintln!("保存配置失败: {}", e);
         }
@@ -251,6 +287,141 @@ impl App {
         self.status = "热键：停止全部".to_string();
     }
 
+    /// 开启语音控制：校验前置条件后启动后台运行时
+    fn start_voice(&mut self) {
+        if self.voice.is_some() {
+            return;
+        }
+        if self.baidu_api_key.trim().is_empty() || self.baidu_secret_key.trim().is_empty() {
+            self.status = "语音开启失败：请先填写百度 API Key / Secret Key".to_string();
+            return;
+        }
+        if !std::path::Path::new(WAKEWORD_MODEL_PATH).exists() {
+            self.status = format!(
+                "语音开启失败：未找到唤醒词模型 {}（请先用 wakeword_test 训练）",
+                WAKEWORD_MODEL_PATH
+            );
+            return;
+        }
+        let cfg = VoiceConfig {
+            model_path: WAKEWORD_MODEL_PATH.to_string(),
+            threshold: WAKEWORD_THRESHOLD,
+            api_key: self.baidu_api_key.clone(),
+            secret_key: self.baidu_secret_key.clone(),
+        };
+        self.voice = Some(VoiceRuntime::start(cfg));
+        self.status = "语音控制已开启，正在初始化...".to_string();
+    }
+
+    /// 关闭语音控制
+    fn stop_voice(&mut self) {
+        if let Some(mut v) = self.voice.take() {
+            v.stop();
+            self.status = "语音控制已关闭".to_string();
+        }
+    }
+
+    /// 处理语音后台线程回传的事件
+    fn process_voice(&mut self) {
+        let Some(voice) = &self.voice else { return };
+        let events = voice.poll();
+        let mut stopped = false;
+        for ev in events {
+            match ev {
+                VoiceEvent::Status(s) => self.status = format!("🎤 {}", s),
+                VoiceEvent::Woke => self.status = "🎤 已唤醒，请说指令...".to_string(),
+                VoiceEvent::Recognized(text) => {
+                    self.last_voice_text = text.clone();
+                    self.handle_voice_text(&text);
+                }
+                VoiceEvent::Error(e) => self.status = format!("🎤 语音错误: {}", e),
+                VoiceEvent::Stopped => stopped = true,
+            }
+        }
+        if stopped {
+            // 后台线程已退出（多为出错自停），清理句柄
+            self.voice = None;
+        }
+    }
+
+    /// 解析识别文本为意图并执行
+    fn handle_voice_text(&mut self, text: &str) {
+        // 收集非空窗口名（默认名"窗口N"也算有效指称）
+        let windows: Vec<(usize, String)> = self
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, s.name.clone()))
+            .collect();
+
+        vlog!("[intent] 原始文本: 「{}」", text);
+        vlog!(
+            "[intent] 当前窗口名: {:?}",
+            windows.iter().map(|(i, n)| format!("{}={}", i + 1, n)).collect::<Vec<_>>()
+        );
+
+        match parse_intent(text, &windows) {
+            Some(VoiceIntent::StopAll) => {
+                vlog!("[intent] 匹配: 停止全部");
+                self.stop_all();
+                self.status = format!("🎤「{}」→ 停止全部", text);
+            }
+            Some(VoiceIntent::StopWindow(idx)) => {
+                vlog!("[intent] 匹配: 停止窗口 {}", idx + 1);
+                self.stop_slot(idx);
+                self.status = format!("🎤「{}」→ 停止 {}", text, self.slots[idx].name);
+            }
+            Some(VoiceIntent::RunAction { window, action }) => {
+                vlog!("[intent] 匹配: 窗口 {} 执行动作「{}」", window + 1, action);
+                self.run_voice_action(window, &action, text);
+            }
+            None => {
+                vlog!("[intent] 未匹配到任何窗口名或停止指令");
+                self.status = format!("🎤「{}」→ 未匹配到指令", text);
+            }
+        }
+    }
+
+    /// 在指定窗口按动作关键词匹配脚本并执行
+    fn run_voice_action(&mut self, idx: usize, action: &str, raw: &str) {
+        let win_name = self.slots[idx].name.clone();
+        if !self.slots[idx].is_bound() {
+            vlog!("[intent] 窗口 {}({}) 未绑定窗口句柄，无法执行", idx + 1, win_name);
+            self.status = format!("🎤「{}」→ {} 未绑定窗口", raw, win_name);
+            return;
+        }
+        // 在该窗口已添加的方案里按动作关键词匹配脚本
+        let names: Vec<String> = self.slots[idx]
+            .schemes
+            .iter()
+            .map(|s| s.script_name.clone())
+            .collect();
+        vlog!("[intent] 窗口 {}({}) 已添加脚本: {:?}", idx + 1, win_name, names);
+        let matched = match_script(action, names.iter().map(|s| s.as_str()));
+        match matched {
+            Some(scheme_idx) => {
+                let script_name = self.slots[idx].schemes[scheme_idx].script_name.clone();
+                vlog!("[intent] 动作「{}」匹配到脚本「{}」，启动", action, script_name);
+                // 设为标识方案并循环启动
+                self.slots[idx].set_marked(scheme_idx);
+                if self.start_slot(idx) {
+                    vlog!("[intent] 已启动窗口 {} 的脚本「{}」", idx + 1, script_name);
+                    self.status =
+                        format!("🎤「{}」→ {} 执行 {}", raw, win_name, script_name);
+                } else {
+                    vlog!("[intent] start_slot 返回 false（窗口失效/无标识方案），未执行");
+                }
+            }
+            None => {
+                vlog!("[intent] 动作「{}」在窗口 {} 的脚本中未找到匹配", action, idx + 1);
+                self.status = format!(
+                    "🎤「{}」→ {} 未找到匹配「{}」的脚本",
+                    raw, win_name, action
+                );
+            }
+        }
+    }
+
     fn run_once_windows(&mut self, windows: &[u8]) {
         let mut n = 0;
         for &w in windows {
@@ -329,6 +500,7 @@ impl App {
                 }
                 TrayCommand::Quit => {
                     // 停止所有运行，标记真正退出，然后关闭
+                    self.stop_voice();
                     self.stop_all();
                     self.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -478,6 +650,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_hotkeys();
         self.process_tray(ctx);
+        self.process_voice();
         self.handle_grabbing();
         self.handle_picking();
         self.check_window_validity();
@@ -500,6 +673,7 @@ impl eframe::App for App {
         self.ui_source_panel(ctx);
         self.ui_add_scheme_window(ctx);
         self.ui_hotkey_help_window(ctx);
+        self.ui_voice_settings_window(ctx);
         self.color_picker.ui(ctx);
         self.ui_central(ctx);
     }
@@ -774,6 +948,97 @@ impl App {
             });
     }
 
+    /// 语音设置窗口：百度密钥 + 使用说明
+    fn ui_voice_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.show_voice_settings {
+            return;
+        }
+        let mut open = true;
+        let mut act_save = false;
+        egui::Window::new("🎤 语音控制设置")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(460.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("百度语音识别密钥（在百度智能云控制台申请）")
+                        .strong(),
+                );
+                ui.add_space(4.0);
+                egui::Grid::new("baidu_keys").num_columns(2).show(ui, |ui| {
+                    ui.label("API Key:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.baidu_api_key)
+                            .desired_width(300.0)
+                            .password(true),
+                    );
+                    ui.end_row();
+                    ui.label("Secret Key:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.baidu_secret_key)
+                            .desired_width(300.0)
+                            .password(true),
+                    );
+                    ui.end_row();
+                });
+                ui.add_space(4.0);
+                if ui.button("💾 保存密钥").clicked() {
+                    act_save = true;
+                }
+
+                ui.separator();
+                let model_ok = std::path::Path::new(WAKEWORD_MODEL_PATH).exists();
+                ui.horizontal(|ui| {
+                    ui.label("唤醒词模型:");
+                    if model_ok {
+                        ui.colored_label(egui::Color32::GREEN, format!("✓ {}", WAKEWORD_MODEL_PATH));
+                    } else {
+                        ui.colored_label(
+                            egui::Color32::RED,
+                            format!("✗ 缺失 {}（请先用 wakeword_test 训练）", WAKEWORD_MODEL_PATH),
+                        );
+                    }
+                });
+
+                if !self.last_voice_text.is_empty() {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label("最近识别:");
+                        ui.colored_label(
+                            egui::Color32::LIGHT_BLUE,
+                            &self.last_voice_text,
+                        );
+                    });
+                }
+
+                ui.separator();
+                ui.collapsing("📖 语音指令说明", |ui| {
+                    ui.label("说唤醒词「小助手」后接指令，例如：");
+                    ui.monospace("  小助手，窗口1跟随我");
+                    ui.label("  → 窗口1执行名字含「跟随」的脚本");
+                    ui.monospace("  小助手，窗口1加血");
+                    ui.label("  → 窗口1执行名字含「加血」的脚本");
+                    ui.monospace("  小助手，窗口1停止");
+                    ui.label("  → 停止窗口1");
+                    ui.monospace("  小助手，所有人停止");
+                    ui.label("  → 停止全部窗口");
+                    ui.add_space(4.0);
+                    ui.label("• 脚本需先在对应窗口「+ 添加方案」");
+                    ui.label("• 窗口名可在各槽位标题处编辑（如改成「主号」）");
+                    ui.label("• 动作按脚本名（去扩展名）包含匹配");
+                });
+            });
+
+        if act_save {
+            self.save_config();
+            self.status = "百度密钥已保存".to_string();
+        }
+        if !open {
+            self.show_voice_settings = false;
+        }
+    }
+
     fn ui_central(&mut self, ctx: &egui::Context) {
         // 收集待执行的动作，避免在借用 slots 时修改 self
         let mut act_start: Option<usize> = None;
@@ -785,6 +1050,7 @@ impl App {
         let mut act_start_all = false;
         let mut act_stop_all = false;
         let mut act_pick = false;
+        let mut act_toggle_voice = false;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // 顶部工具行
@@ -798,6 +1064,23 @@ impl App {
                 }
                 if ui.button("❓ 热键说明").clicked() {
                     self.show_hotkey_help = true;
+                }
+                // 语音控制开关
+                let voice_on = self.voice.is_some();
+                let voice_label = if voice_on { "🎤 语音: 开" } else { "🎤 语音: 关" };
+                if ui
+                    .button(egui::RichText::new(voice_label).color(if voice_on {
+                        egui::Color32::GREEN
+                    } else {
+                        egui::Color32::GRAY
+                    }))
+                    .on_hover_text("开启/关闭语音控制")
+                    .clicked()
+                {
+                    act_toggle_voice = true;
+                }
+                if ui.button("⚙ 语音设置").clicked() {
+                    self.show_voice_settings = true;
                 }
                 ui.separator();
                 if ui.button("▶ 全部启动").clicked() {
@@ -862,6 +1145,13 @@ impl App {
         if let Some(i) = act_stop {
             self.stop_slot(i);
         }
+        if act_toggle_voice {
+            if self.voice.is_some() {
+                self.stop_voice();
+            } else {
+                self.start_voice();
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -884,10 +1174,23 @@ impl App {
             ui.style().visuals.faint_bg_color
         });
 
+        let mut name_changed = false;
         frame.show(ui, |ui| {
             // 标题行
             ui.horizontal(|ui| {
-                ui.strong(format!("窗口 {}", idx + 1));
+                ui.strong(format!("{}.", idx + 1));
+                // 可编辑的窗口名（语音指称用）
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.slots[idx].name)
+                        .desired_width(90.0)
+                        .hint_text(format!("窗口{}", idx + 1)),
+                );
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    name_changed = true;
+                }
+                if resp.lost_focus() {
+                    name_changed = true;
+                }
                 if running {
                     ui.colored_label(egui::Color32::GREEN, "● 运行中");
                 } else {
@@ -999,6 +1302,14 @@ impl App {
             });
         });
         ui.add_space(4.0);
+
+        // 窗口名编辑完成后持久化（空则回退默认名）
+        if name_changed {
+            if self.slots[idx].name.trim().is_empty() {
+                self.slots[idx].name = format!("窗口{}", idx + 1);
+            }
+            self.save_config();
+        }
     }
 }
 

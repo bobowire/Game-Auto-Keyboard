@@ -15,6 +15,8 @@ pub struct Scheme {
 
 /// 单个窗口槽位
 pub struct WindowSlot {
+    /// 自定义窗口名（语音指称用，如"窗口1"、"主号"）
+    pub name: String,
     /// 目标窗口句柄（isize 形式，未绑定为 None）
     pub hwnd: Option<isize>,
     /// 窗口标题
@@ -30,6 +32,7 @@ pub struct WindowSlot {
 impl Default for WindowSlot {
     fn default() -> Self {
         Self {
+            name: String::new(),
             hwnd: None,
             title: String::new(),
             schemes: Vec::new(),

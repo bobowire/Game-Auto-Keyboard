@@ -11,6 +11,9 @@ const CONFIG_PATH: &str = "config/config.json";
 /// 单个槽位的持久化配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SlotConfig {
+    /// 自定义窗口名（语音指称用，如"窗口1"、"主号"）。空则显示默认名
+    #[serde(default)]
+    pub name: String,
     /// 该槽位绑定的方案脚本文件名列表（顺序即显示顺序）
     #[serde(default)]
     pub scheme_names: Vec<String>,
