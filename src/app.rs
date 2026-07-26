@@ -897,7 +897,14 @@ impl App {
     fn ui_add_scheme_window(&mut self, ctx: &egui::Context) {
         let Some(slot_idx) = self.adding_scheme_for else { return };
         let mut open = true;
-        let mut to_add: Option<usize> = None;
+
+        // 先收集所有脚本信息，避免借用冲突
+        let script_list: Vec<(usize, String, String, bool, Option<Vec<crate::script::Command>>, Option<String>)> =
+            self.scripts.iter().enumerate().map(|(i, sf)| {
+                (i, sf.name.clone(), sf.category.clone(), sf.is_valid(), sf.commands.clone(), sf.parse_error.clone())
+            }).collect();
+
+        let mut to_add: Option<(usize, String, Vec<crate::script::Command>)> = None;
 
         egui::Window::new(format!("为窗口 {} 添加方案", slot_idx + 1))
             .collapsible(false)
@@ -906,14 +913,15 @@ impl App {
             .show(ctx, |ui| {
                 ui.label("点击脚本加入该窗口的方案集：");
                 ui.separator();
+
                 egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                     // 按分类分组
-                    let mut categories: std::collections::BTreeMap<String, Vec<(usize, &ScriptFile)>> =
+                    let mut categories: std::collections::BTreeMap<String, Vec<(usize, String, bool, Option<Vec<crate::script::Command>>, Option<String>)>> =
                         std::collections::BTreeMap::new();
-                    for (i, sf) in self.scripts.iter().enumerate() {
-                        categories.entry(sf.category.clone())
+                    for (i, name, category, valid, commands, parse_error) in &script_list {
+                        categories.entry(category.clone())
                             .or_insert_with(Vec::new)
-                            .push((i, sf));
+                            .push((*i, name.clone(), *valid, commands.clone(), parse_error.clone()));
                     }
 
                     // 显示每个分类
@@ -921,18 +929,25 @@ impl App {
                         egui::CollapsingHeader::new(&category)
                             .default_open(true)
                             .show(ui, |ui| {
-                                for (i, sf) in scripts {
+                                for (i, name, valid, commands, parse_error) in scripts {
                                     ui.horizontal(|ui| {
-                                        let valid = sf.is_valid();
+                                        // 状态文本标签
                                         if valid {
-                                            ui.colored_label(egui::Color32::GREEN, "✓");
+                                            ui.colored_label(egui::Color32::from_rgb(0, 180, 0), "有效")
+                                                .on_hover_text("脚本解析成功");
                                         } else {
-                                            ui.colored_label(egui::Color32::RED, "✗");
+                                            let error_text = parse_error.unwrap_or_else(|| "未知错误".to_string());
+                                            ui.colored_label(egui::Color32::from_rgb(220, 0, 0), "无效")
+                                                .on_hover_text(format!("语法错误:\n{}", error_text));
                                         }
-                                        ui.label(&sf.name);
+                                        ui.label(&name);
                                         // 仅解析成功的脚本可加入
-                                        if valid && ui.small_button("加入").clicked() {
-                                            to_add = Some(i);
+                                        if valid {
+                                            if ui.small_button("加入").clicked() {
+                                                if let Some(cmds) = commands {
+                                                    to_add = Some((i, name.clone(), cmds));
+                                                }
+                                            }
                                         }
                                     });
                                 }
@@ -941,19 +956,17 @@ impl App {
                 });
             });
 
-        if let Some(script_idx) = to_add {
-            let sf = &self.scripts[script_idx];
-            if let Some(commands) = &sf.commands {
-                let scheme = Scheme {
-                    script_name: sf.name.clone(),
-                    commands: commands.clone(),
-                };
-                if self.slots[slot_idx].add_scheme(scheme) {
-                    self.status = format!("窗口 {} 已添加方案: {}", slot_idx + 1, sf.name);
-                    self.save_config();
-                } else {
-                    self.status = format!("方案已存在: {}", sf.name);
-                }
+        // 处理添加操作
+        if let Some((script_idx, script_name, commands)) = to_add {
+            let scheme = Scheme {
+                script_name,
+                commands,
+            };
+            if self.slots[slot_idx].add_scheme(scheme) {
+                self.status = format!("窗口 {} 已添加方案: {}", slot_idx + 1, self.scripts[script_idx].name);
+                self.save_config();
+            } else {
+                self.status = format!("方案已存在: {}", self.scripts[script_idx].name);
             }
         }
 

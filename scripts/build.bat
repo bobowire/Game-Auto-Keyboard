@@ -68,6 +68,14 @@ echo.
 echo [Debug Build] cargo build
 echo ----------------------------------------
 cargo build
+if errorlevel 1 goto DONE
+
+echo.
+echo [Deploy] Copying to build directory...
+echo ----------------------------------------
+if not exist build mkdir build
+copy /Y target\debug\game-auto-keyboard.exe build\
+echo Deployed to: build\game-auto-keyboard.exe
 goto DONE
 
 :RELEASE
@@ -75,6 +83,14 @@ echo.
 echo [Release Build] cargo build --release
 echo ----------------------------------------
 cargo build --release
+if errorlevel 1 goto DONE
+
+echo.
+echo [Deploy] Copying to build directory...
+echo ----------------------------------------
+if not exist build mkdir build
+copy /Y target\release\game-auto-keyboard.exe build\
+echo Deployed to: build\game-auto-keyboard.exe
 goto DONE
 
 :RUN
