@@ -10,6 +10,7 @@
 ### 核心功能
 - 🎮 **多窗口管理**：支持同时管理 8 个游戏窗口
 - 📜 **脚本系统**：自定义 .ag 脚本语言，支持键盘/鼠标/条件/循环
+- 🎤 **语音控制**：说"小助手，窗口1跟随我"即可执行脚本（✨ 新功能）
 - ⌨️ **全局热键**：
   - `Ctrl+Shift+[1-8]` 选择窗口
   - `Ctrl+Shift+9` 循环启动 / `0` 停止
@@ -113,6 +114,47 @@ Ctrl+Shift+Insert     # 进入发送模式
 Ctrl+Shift+H          # 2秒内按任意键（支持A-Z/0-9/F1-F12/空格等）
 ```
 
+### 5. 语音控制（✨ 新功能）
+
+#### 初次设置
+1. **训练唤醒词**（仅需一次）
+   ```bash
+   # 使用 build.bat 选择 [a] wakeword_test
+   # 或直接运行
+   cargo run --example wakeword_test --release
+   
+   # 按提示录制4遍"小助手"，生成 wakeword_model.rpw
+   ```
+
+2. **配置百度语音识别**
+   - 点击工具栏 **"⚙ 语音设置"**
+   - 填写百度 API Key / Secret Key（[申请地址](https://console.bce.baidu.com/ai/#/ai/speech/overview/index)）
+   - 点击 **"💾 保存密钥"**
+
+3. **准备窗口和脚本**
+   - 抓取窗口、添加脚本（如 `跟随.ag`、`加血.ag`）
+   - 可编辑窗口名：点击槽位标题行的窗口名，改成"主号"、"辅助"等
+
+#### 使用语音指令
+1. 点击工具栏 **"🎤 语音: 关"** 切换为 **"🎤 语音: 开"**
+2. 底部状态显示 "🎤 语音待命：说\"小助手\"唤醒"
+3. 说出指令：
+
+```
+"小助手，窗口1跟随我"          → 窗口1执行包含"跟随"的脚本
+"小助手，窗口1快加血"          → 窗口1执行包含"加血"的脚本
+"小助手，所有人停止"           → 停止全部窗口
+"小助手，窗口1停止"            → 停止窗口1
+```
+
+**说明**：
+- 动作关键词（如"跟随我"）会匹配脚本名包含该词的脚本（"跟随.ag"）
+- 脚本需要先添加到对应窗口的方案集
+- 支持中文数字："窗口一"自动识别为"窗口1"
+- 日志输出到 `voice_debug.log`，可查看识别过程
+
+**故障排查**：详见 [VOICE_DEBUG.md](VOICE_DEBUG.md)
+
 ## 📁 项目结构
 
 ```
@@ -136,12 +178,25 @@ GameAutoKeyboard/
 │   │   ├── executor.rs           # 脚本执行器
 │   │   ├── loader.rs             # 脚本加载器
 │   │   └── token.rs              # 词法分析
+│   ├── voice/                    # 语音控制模块（✨ 新增）
+│   │   ├── capture.rs            # 麦克风采集
+│   │   ├── ring_buffer.rs        # 环形缓冲
+│   │   ├── wakeword.rs           # 唤醒词检测
+│   │   ├── vad.rs                # VAD 静音检测
+│   │   ├── baidu_asr.rs          # 百度语音识别
+│   │   ├── intent.rs             # 意图解析
+│   │   ├── runtime.rs            # 语音运行时
+│   │   └── vlog.rs               # 调试日志
 │   └── utils/
 │       └── win32.rs              # Windows API 工具函数
 ├── scripts/                      # 脚本目录 (.ag 文件)
 ├── config/                       # 配置目录 (config.json)
 ├── docs/                         # 完整设计文档
-└── examples/                     # 示例和测试
+├── examples/                     # 示例和测试
+│   ├── wakeword_test.rs          # 唤醒词训练工具
+│   └── asr_test.rs               # ASR 测试
+├── VOICE_DEBUG.md                # 语音调试指南
+└── wakeword_model.rpw            # 唤醒词模型（需训练生成）
 
 ```
 
@@ -153,6 +208,12 @@ GameAutoKeyboard/
 - **配置序列化**: serde + serde_json
 - **系统托盘**: tray-icon 0.19
 - **资源嵌入**: winres 0.1
+- **语音控制** (✨ 新增):
+  - 音频采集: cpal 0.15 (WASAPI)
+  - 唤醒词检测: rustpotter 3.0.2
+  - VAD 静音检测: webrtc-vad 0.4
+  - 语音识别: 百度短语音识别 API
+  - HTTP 客户端: ureq 2
 
 ## 🔧 高级配置
 
