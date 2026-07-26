@@ -1795,6 +1795,7 @@ dependencies = [
  "egui",
  "env_logger",
  "log",
+ "raw-window-handle",
  "rustpotter",
  "serde",
  "serde_json",

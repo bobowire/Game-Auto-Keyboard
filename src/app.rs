@@ -62,6 +62,8 @@ pub struct App {
     tray: Option<Tray>,
     // 是否正在真正退出（托盘“退出”触发），用于放行关闭请求
     quitting: bool,
+    // 还需强制唤醒多少帧（窗口隐藏时 egui 不会自然重绘，见 process_tray）
+    wake_pending: u8,
 
     // 语音控制运行时（None 表示未开启）
     voice: Option<VoiceRuntime>,
@@ -194,6 +196,7 @@ impl App {
             hotkey_sm: HotkeyStateMachine::new(),
             tray,
             quitting: false,
+            wake_pending: 0,
             voice: None,
             baidu_api_key: config.baidu.api_key.clone(),
             baidu_secret_key: config.baidu.secret_key.clone(),
@@ -629,22 +632,67 @@ impl App {
         }
     }
 
+    /// 把主窗口 HWND 交给托盘（只需成功一次）。
+    /// 托盘事件回调靠它在窗口隐藏时唤醒 update。
+    fn capture_main_hwnd(&mut self, frame: &eframe::Frame) {
+        let Some(tray) = &self.tray else { return };
+        if tray.has_main_hwnd() {
+            return;
+        }
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = frame.window_handle() {
+            if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                tray.set_main_hwnd(isize::from(h.hwnd));
+            }
+        }
+    }
+
+    /// 请求接下来 n 帧强制唤醒，并立即先唤醒一次。
+    ///
+    /// 必须立即唤醒：窗口隐藏时本帧结束后不会有下一帧，
+    /// 只把计数存起来是没用的（pump 永远等不到执行机会）。
+    fn request_wake(&mut self, frames: u8) {
+        self.wake_pending = frames;
+        if let Some(tray) = &self.tray {
+            tray.wake_main_window();
+        }
+    }
+
+    /// 消耗待唤醒帧数：窗口隐藏时 egui 不会自然重绘，
+    /// 靠托盘的 PostMessage 续帧，直到关闭真正生效。
+    fn pump_pending_wake(&mut self) {
+        if self.wake_pending == 0 {
+            return;
+        }
+        self.wake_pending -= 1;
+        if let Some(tray) = &self.tray {
+            tray.wake_main_window();
+        }
+    }
+
     /// 处理托盘事件
     fn process_tray(&mut self, ctx: &egui::Context) {
         let Some(tray) = &self.tray else { return };
         for cmd in tray.poll() {
             match cmd {
                 TrayCommand::Show => {
+                    // 先让窗口重新可见，再恢复正常显示状态（隐藏期间可能仍是最小化）
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     self.status = "已从托盘恢复".to_string();
                 }
                 TrayCommand::Quit => {
-                    // 停止所有运行，标记真正退出，然后关闭
+                    // 停止所有运行，落盘配置，标记真正退出，然后关闭
                     self.stop_voice();
                     self.stop_all();
+                    self.save_config();
                     self.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    // 关闭要两帧才生效（本帧投递 Close 事件，下一帧才被判定为
+                    // close_requested 并退出）。窗口隐藏时不会自然重绘，
+                    // 必须显式续帧，否则进程会卡住不退。
+                    self.request_wake(3);
                 }
             }
         }
@@ -789,6 +837,8 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.capture_main_hwnd(_frame);
+        self.pump_pending_wake();
         self.process_hotkeys();
         self.process_tray(ctx);
         self.process_voice();
