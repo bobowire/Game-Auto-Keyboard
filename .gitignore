@@ -1,5 +1,6 @@
 # Rust
 /target/
+/build/
 **/*.rs.bk
 *.pdb
 # 注意：二进制项目应提交 Cargo.lock 以锁定依赖版本
