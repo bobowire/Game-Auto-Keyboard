@@ -18,6 +18,8 @@ const SAMPLE_COUNT: usize = 4; // 录制遍数
 const RECORD_SECS: f32 = 1.5; // 每遍录音时长
 const MODEL_PATH: &str = "wakeword_model.rpw";
 const DETECT_THRESHOLD: f32 = 0.5;
+/// 单次听指令的总时长上限（兜底，正常由 VAD 静音判定结束）
+const MAX_LISTEN_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() {
     println!("=== 唤醒词 录制→训练→检测 测试 ===");
@@ -126,21 +128,20 @@ fn main() {
                 }
             }
             VoiceState::Listening { recorder, started } => {
-                let elapsed = started.elapsed();
-
-                // 超时控制：3秒没说话 / 最长8秒
-                let no_speech_timeout =
-                    !recorder.speech_started() && elapsed > Duration::from_secs(3);
-                let max_timeout = elapsed > Duration::from_secs(8);
+                // 正常结束由 VAD 的连续静音判定负责（同时管"说完了"和"唤醒后
+                // 一直没开口"）。这里只兜底：说得特别长或底噪极端时强制收尾。
+                let max_timeout = started.elapsed() > MAX_LISTEN_TIMEOUT;
 
                 let done_audio = match recorder.process(&frame) {
-                    RecordState::Done(audio) => Some(audio),
+                    RecordState::Done(audio) => {
+                        if audio.is_empty() {
+                            println!("  ⏱ 未听到指令，回到待命");
+                        }
+                        Some(audio)
+                    }
                     RecordState::Recording => {
-                        if no_speech_timeout {
-                            println!("  ⏱ 超时（3秒无语音），回到待命");
-                            None // 下面统一处理，用空音频表示放弃
-                        } else if max_timeout {
-                            println!("  ⏱ 达到最长8秒，强制结束");
+                        if max_timeout {
+                            println!("  ⏱ 达到最长{}秒，强制结束", MAX_LISTEN_TIMEOUT.as_secs());
                             Some(recorder.finish())
                         } else {
                             continue;

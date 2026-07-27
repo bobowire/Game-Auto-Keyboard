@@ -10,6 +10,7 @@
 // 意图解析放在 UI 线程是因为窗口名/脚本都由 App 持有，避免跨线程共享槽位。
 
 use crate::event_bus::{EventSender, MainEvent};
+use crate::voice::vad::SILENCE_END_MS;
 use crate::voice::{
     AudioCapture, AudioRingBuffer, BaiduAsr, CommandRecorder, RecordState, WakewordDetector,
     TARGET_SAMPLE_RATE,
@@ -80,6 +81,13 @@ impl Drop for VoiceRuntime {
         self.stop();
     }
 }
+
+/// 单次听指令的总时长上限，防止一直录下去
+///
+/// 正常路径由 VAD 的连续静音判定（SILENCE_END_MS）结束录音——它同时管
+/// "说完了"和"唤醒后一直没开口"两种情况。这里只是兜底：说得特别长、
+/// 或底噪极端到静音永远攒不够时强制收尾。
+const MAX_LISTEN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 语音状态机
 enum State {
@@ -175,28 +183,21 @@ fn run_loop(config: VoiceConfig, stop_rx: Receiver<()>, events: EventSender) {
                 }
             }
             State::Listening { recorder, started } => {
-                let elapsed = started.elapsed();
-                let no_speech_timeout =
-                    !recorder.speech_started() && elapsed > Duration::from_secs(3);
-                let max_timeout = elapsed > Duration::from_secs(8);
+                let max_timeout = started.elapsed() > MAX_LISTEN_TIMEOUT;
 
                 let done_audio = match recorder.process(&frame) {
                     RecordState::Done(audio) => {
                         vlog!(
-                            "[voice] VAD 检测到静音，录音结束（噪声底 {:.1}）",
+                            "[voice] VAD 检测到静音（{}ms），录音结束（噪声底 {:.1}）",
+                            SILENCE_END_MS,
                             recorder.noise_floor()
                         );
                         Some(audio)
                     }
                     RecordState::Recording => {
-                        if no_speech_timeout {
-                            vlog!("[voice] 超时：3秒内未检测到语音，放弃");
-                            let _ = tx.send(VoiceEvent::Status(
-                                "超时（3秒无语音），回到待命".to_string(),
-                            ));
-                            None
-                        } else if max_timeout {
-                            vlog!("[voice] 达到最长8秒，强制结束录音");
+                        if max_timeout {
+                            vlog!("[voice] 达到最长{}秒，强制结束录音",
+                                MAX_LISTEN_TIMEOUT.as_secs());
                             Some(recorder.finish())
                         } else {
                             continue;
@@ -212,7 +213,7 @@ fn run_loop(config: VoiceConfig, stop_rx: Receiver<()>, events: EventSender) {
                         // ASR 识别（阻塞 HTTP，但在后台线程无妨）
                         match asr.recognize(&audio) {
                             Ok(text) if !text.trim().is_empty() => {
-                                vlog!("[voice] ASR 识别结果: 「{}」", text);
+                                vlog!("[voice] ASR 完整识别结果: 「{}」", text);
                                 let _ = tx.send(VoiceEvent::Recognized(text));
                             }
                             Ok(_) => {
