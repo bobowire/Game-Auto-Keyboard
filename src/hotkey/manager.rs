@@ -1,9 +1,12 @@
 // 全局热键管理器
 //
 // 在独立线程注册 Ctrl+Shift+[0-9] 共 10 个热键，通过消息循环接收 WM_HOTKEY，
-// 把原始按键事件用 channel 送回 UI 线程。UI 线程再交给状态机处理。
+// 把原始按键事件投进主事件总线（EventSender 会顺带唤醒主窗口，所以窗口隐藏时
+// 热键依然即时生效 —— 以前只靠 update 轮询 channel，隐藏后热键就哑了）。
+// UI 线程从总线取到 HotkeyKey 后再交给状态机处理。
 
-use crossbeam_channel::{Receiver, Sender};
+use crate::event_bus::{EventSender, MainEvent};
+use crossbeam_channel::Sender;
 use std::thread;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -52,7 +55,6 @@ const HOTKEY_ID_FKEY_BASE: i32 = 0xA200;
 const HOTKEY_ID_SPECIAL_BASE: i32 = 0xA300;
 
 pub struct HotkeyManager {
-    rx: Receiver<HotkeyKey>,
     /// 消息循环线程句柄
     _thread: thread::JoinHandle<()>,
     /// 用于向消息线程投递退出请求的线程 id
@@ -60,15 +62,15 @@ pub struct HotkeyManager {
 }
 
 impl HotkeyManager {
-    /// 启动热键监听。失败（如热键被占用）会在事件流里体现为收不到对应按键，
+    /// 启动热键监听。热键事件通过 `events` 投进主事件总线。
+    /// 失败（如热键被占用）会在事件流里体现为收不到对应按键，
     /// 这里仅在注册全部失败时返回 Err。
-    pub fn start() -> Result<Self, String> {
-        let (tx, rx) = crossbeam_channel::unbounded::<HotkeyKey>();
+    pub fn start(events: EventSender) -> Result<Self, String> {
         let (id_tx, id_rx) = crossbeam_channel::bounded::<u32>(1);
         let (ok_tx, ok_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
 
         let thread = thread::spawn(move || {
-            run_message_loop(tx, id_tx, ok_tx);
+            run_message_loop(events, id_tx, ok_tx);
         });
 
         // 等待线程报告注册结果
@@ -80,19 +82,9 @@ impl HotkeyManager {
         let thread_id = id_rx.recv().map_err(|_| "无法获取热键线程 id".to_string())?;
 
         Ok(Self {
-            rx,
             _thread: thread,
             thread_id,
         })
-    }
-
-    /// 非阻塞地取出所有待处理热键事件
-    pub fn poll(&self) -> Vec<HotkeyKey> {
-        let mut out = Vec::new();
-        while let Ok(k) = self.rx.try_recv() {
-            out.push(k);
-        }
-        out
     }
 }
 
@@ -108,7 +100,7 @@ impl Drop for HotkeyManager {
 
 /// 消息线程主体：注册热键 -> 消息循环 -> 注销
 fn run_message_loop(
-    tx: Sender<HotkeyKey>,
+    events: EventSender,
     id_tx: Sender<u32>,
     ok_tx: Sender<Result<(), String>>,
 ) {
@@ -188,20 +180,17 @@ fn run_message_loop(
             if msg.message == WM_HOTKEY {
                 let id = msg.wParam.0 as i32;
 
-                if id == HOTKEY_ID_MINUS {
-                    let _ = tx.send(HotkeyKey::Minus);
+                let key = if id == HOTKEY_ID_MINUS {
+                    Some(HotkeyKey::Minus)
                 } else if id == HOTKEY_ID_INSERT {
-                    let _ = tx.send(HotkeyKey::Insert);
+                    Some(HotkeyKey::Insert)
                 } else if id >= HOTKEY_ID_BASE && id < HOTKEY_ID_BASE + 10 {
-                    let digit = (id - HOTKEY_ID_BASE) as u8;
-                    let _ = tx.send(HotkeyKey::Digit(digit));
+                    Some(HotkeyKey::Digit((id - HOTKEY_ID_BASE) as u8))
                 } else if id >= HOTKEY_ID_LETTER_BASE && id < HOTKEY_ID_LETTER_BASE + 26 {
                     let letter_idx = (id - HOTKEY_ID_LETTER_BASE) as u8;
-                    let letter = (b'A' + letter_idx) as char;
-                    let _ = tx.send(HotkeyKey::Letter(letter));
+                    Some(HotkeyKey::Letter((b'A' + letter_idx) as char))
                 } else if id >= HOTKEY_ID_FKEY_BASE && id < HOTKEY_ID_FKEY_BASE + 12 {
-                    let fkey = ((id - HOTKEY_ID_FKEY_BASE) + 1) as u8;
-                    let _ = tx.send(HotkeyKey::FKey(fkey));
+                    Some(HotkeyKey::FKey(((id - HOTKEY_ID_FKEY_BASE) + 1) as u8))
                 } else if id >= HOTKEY_ID_SPECIAL_BASE && id < HOTKEY_ID_SPECIAL_BASE + 4 {
                     let special = match id - HOTKEY_ID_SPECIAL_BASE {
                         0 => SpecialKey::Space,
@@ -210,7 +199,14 @@ fn run_message_loop(
                         3 => SpecialKey::Escape,
                         _ => unreachable!(),
                     };
-                    let _ = tx.send(HotkeyKey::Special(special));
+                    Some(HotkeyKey::Special(special))
+                } else {
+                    None
+                };
+
+                // 投进总线：入队 + 唤醒主窗口（窗口隐藏时也能立刻处理）
+                if let Some(key) = key {
+                    events.send(MainEvent::Hotkey(key));
                 }
             }
             let _ = TranslateMessage(&msg);

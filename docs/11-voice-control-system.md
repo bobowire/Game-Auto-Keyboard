@@ -963,7 +963,9 @@ Idle(唤醒词检测) → Woke → 回溯2秒 → Listening(VAD录音)
 
 **核心方法**：
 - `start_voice()` / `stop_voice()`：开关语音控制
-- `process_voice()`：轮询事件，收到 `Recognized` 调用 `handle_voice_text()`
+- `handle_voice_event()`：处理总线分发来的事件，收到 `Recognized` 调用
+  `handle_voice_text()`（后台线程把事件投进统一事件总线，见 ADR-005；
+  这样隐藏到托盘时识别结果也会被即时处理）
 - `handle_voice_text()`：调用 `parse_intent()` 解析，分发到执行逻辑
 - `run_voice_action()`：按动作关键词匹配脚本 → 设标识 → 启动槽位
 

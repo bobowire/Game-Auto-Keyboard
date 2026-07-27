@@ -238,6 +238,95 @@ pub enum InputError {
 
 ---
 
+## ADR-005: 统一事件总线（自带窗口唤醒）
+
+**日期**: 2026-07-26
+**状态**: ✅ 已采纳
+
+### 背景
+
+程序有多个后台事件源（托盘菜单、全局热键、语音识别），原先每个源都持有自己的
+channel，由 `App::update()` 逐个 `poll()`。这个模式在隐藏到托盘后失效：
+
+窗口不可见 → Windows 不再产生 `WM_PAINT` → winit 收不到 `RedrawRequested`
+→ eframe 不调用 `App::update()` → 所有 poll 点停摆。
+
+表现为：托盘菜单点了没反应、热键按了不执行、语音识别完了不动。
+`ctx.request_repaint()` 也救不了 —— winit 用 `RDW_INTERNALPAINT` 请求重绘，
+不可见窗口不会因此收到 `WM_PAINT`。
+
+托盘模块曾单独打过补丁（回调里自己 `PostMessage(WM_PAINT)`），但那是点状修复：
+热键和语音各自还是哑的，而且以后每加一个事件源都得记得重写一遍唤醒逻辑。
+
+### 决策
+
+**引入 `src/event_bus.rs`：所有后台事件收敛到一条 `MainEvent` 队列，
+投递动作内部自带窗口唤醒。**
+
+```rust
+pub enum MainEvent {
+    Tray(TrayCommand),
+    Hotkey(HotkeyKey),
+    Voice(VoiceEvent),
+}
+
+// 后台线程侧：send 即自动唤醒主窗口
+impl EventSender {
+    pub fn send(&self, event: MainEvent) {
+        let _ = self.tx.send(event);
+        wake_main_window(&self.hwnd);   // PostMessage(WM_PAINT)
+    }
+}
+
+// 主线程侧：每帧一次统一分发
+fn dispatch_events(&mut self, ctx: &egui::Context) {
+    for event in self.events.poll() {
+        match event {
+            MainEvent::Tray(cmd) => self.handle_tray(ctx, cmd),
+            MainEvent::Hotkey(key) => self.handle_hotkey(key),
+            MainEvent::Voice(ev) => self.handle_voice_event(ev),
+        }
+    }
+}
+```
+
+配套 `WakeTicker`：给"必须连续跑 update 才能推进"的流程用（唤醒词训练要逐帧
+抽麦克风数据），活着期间定时唤醒，drop 即停。
+
+### 理由
+
+1. **唤醒不再是每个事件源的责任**：新增事件源只要用 `EventSender::send()`，
+   自动获得隐藏时也能即时响应的能力，不会漏
+2. **消除三处重复的 poll 样板**：`process_hotkeys` / `process_tray` /
+   `process_voice` 合并为一个 `dispatch_events`
+3. **HWND 只登记一处**：原先托盘持有 HWND 槽位，语音要用还得再传一遍
+4. **可测**：总线本身不依赖窗口，`poll` / 生命周期行为可单元测试
+
+### 替代方案
+
+#### 方案 A: 每个事件源自己 PostMessage
+- ✅ 改动小
+- ❌ 唤醒逻辑重复三份，新增事件源必然漏（这正是修复前的状态）
+- ❌ HWND 要分发给每个事件源
+
+#### 方案 B: 用 `eframe` 的 `Repaint` 信号 / `request_repaint`
+- ❌ 不可见窗口收不到 `WM_PAINT`，根本无效（已验证）
+
+#### 方案 C: 常驻消息窗口（`HWND_MESSAGE`）单独跑事件循环
+- ✅ 彻底脱离 UI 可见性
+- ❌ 需要维护第二个窗口和线程模型，改动远超收益
+- ❌ 事件仍要跨回 UI 线程才能改 `App` 状态，问题没消失
+
+### 后果
+
+- `Tray::new()` / `HotkeyManager::start()` / `VoiceRuntime::start()` 签名
+  各增加一个 `EventSender` 参数，各自的 `poll()` 移除
+- `VoiceEvent` 需要 `Debug + Clone`（作为 `MainEvent` 的载荷）
+- 所有事件源共用一条队列 → 停止语音后残留事件可能误伤新实例，
+  `handle_voice_event()` 在 `self.voice.is_none()` 时丢弃事件
+
+---
+
 ## 决策总结
 
 | ADR | 决策 | 优先级 | 状态 |
@@ -246,6 +335,7 @@ pub enum InputError {
 | 002 | PostMessage 默认 | P0 | ✅ 已采纳 |
 | 003 | 客户区坐标统一 | P0 | ✅ 已采纳 |
 | 004 | Result<(), String> | P0 | ✅ 已采纳 |
+| 005 | 统一事件总线（自带唤醒） | P0 | ✅ 已采纳 |
 
 ---
 

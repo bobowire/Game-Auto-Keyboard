@@ -307,7 +307,9 @@ pub struct AutoKeyboardApp {
     ↓
 HotkeyManager 产生 HotkeyEvent::Start([2])
     ↓
-App.process_hotkeys() 处理事件
+投进事件总线（MainEvent::Hotkey，顺带唤醒主窗口）
+    ↓
+App.dispatch_events() → App.handle_hotkey() 处理事件
     ↓
 获取 WindowSlot[1].marked_scheme
     ↓

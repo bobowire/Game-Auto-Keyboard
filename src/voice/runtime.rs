@@ -4,9 +4,12 @@
 //   麦克风采集 → 环形缓冲 → 唤醒词检测 → 回溯 2 秒补指令开头
 //   → VAD 录音 → 指令音频 → 百度 ASR → 识别文本
 //
-// UI 线程只负责：给出配置启动线程、poll 事件、拿到识别文本后做意图解析与执行。
+// 事件统一投进主事件总线（EventSender 会顺带唤醒主窗口），所以隐藏到托盘后
+// 识别结果依然会被即时处理。UI 线程只负责：启动/停止线程、从总线取事件、
+// 拿到识别文本后做意图解析与执行。
 // 意图解析放在 UI 线程是因为窗口名/脚本都由 App 持有，避免跨线程共享槽位。
 
+use crate::event_bus::{EventSender, MainEvent};
 use crate::voice::{
     AudioCapture, AudioRingBuffer, BaiduAsr, CommandRecorder, RecordState, WakewordDetector,
     TARGET_SAMPLE_RATE,
@@ -16,6 +19,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// 后台线程回传给 UI 的事件
+#[derive(Debug, Clone)]
 pub enum VoiceEvent {
     /// 一般状态提示
     Status(String),
@@ -44,34 +48,22 @@ pub struct VoiceConfig {
 /// UI 侧持有的运行时句柄
 pub struct VoiceRuntime {
     stop_tx: Sender<()>,
-    event_rx: Receiver<VoiceEvent>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl VoiceRuntime {
-    /// 启动后台线程。立即返回句柄；实际就绪/失败通过事件回传。
-    pub fn start(config: VoiceConfig) -> Self {
+    /// 启动后台线程。立即返回句柄；实际就绪/失败通过 `events` 回传。
+    pub fn start(config: VoiceConfig, events: EventSender) -> Self {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-        let (event_tx, event_rx) = std::sync::mpsc::channel::<VoiceEvent>();
 
         let handle = thread::spawn(move || {
-            run_loop(config, stop_rx, event_tx);
+            run_loop(config, stop_rx, events);
         });
 
         Self {
             stop_tx,
-            event_rx,
             handle: Some(handle),
         }
-    }
-
-    /// 非阻塞取出所有待处理事件
-    pub fn poll(&self) -> Vec<VoiceEvent> {
-        let mut out = Vec::new();
-        while let Ok(ev) = self.event_rx.try_recv() {
-            out.push(ev);
-        }
-        out
     }
 
     /// 请求停止并等待线程退出
@@ -100,7 +92,21 @@ enum State {
     },
 }
 
-fn run_loop(config: VoiceConfig, stop_rx: Receiver<()>, tx: Sender<VoiceEvent>) {
+/// 把 VoiceEvent 包装成 MainEvent 投进总线的小适配器
+///
+/// 让流水线里的 `tx.send(VoiceEvent::...)` 写法保持不变，同时自动获得
+/// "入队 + 唤醒主窗口" 的行为。
+struct VoiceEmitter(EventSender);
+
+impl VoiceEmitter {
+    fn send(&self, ev: VoiceEvent) {
+        self.0.send(MainEvent::Voice(ev));
+    }
+}
+
+fn run_loop(config: VoiceConfig, stop_rx: Receiver<()>, events: EventSender) {
+    let tx = VoiceEmitter(events);
+
     // 启动麦克风
     let capture = match AudioCapture::start() {
         Ok(c) => c,

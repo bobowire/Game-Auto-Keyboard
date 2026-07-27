@@ -2,6 +2,7 @@
 
 use crate::color_picker::ColorPicker;
 use crate::config::AppConfig;
+use crate::event_bus::{MainEvent, MainEventBus, WakeTicker};
 use crate::hotkey::{HotkeyAction, HotkeyKey, HotkeyManager, HotkeyStateMachine};
 use crate::runner::Runner;
 use crate::script::{load_dir, ScriptFile, ScriptSettings};
@@ -47,6 +48,10 @@ fn play_sound(name: &str) {
 }
 
 pub struct App {
+    // 统一事件总线：所有后台事件源（托盘/热键/语音）都往这里投事件，
+    // 投递时自动 PostMessage(WM_PAINT) 唤醒主窗口，因此隐藏到托盘后依然即时响应。
+    events: MainEventBus,
+
     // 脚本列表（全局候选池）
     scripts: Vec<ScriptFile>,
     scripts_dir: PathBuf,
@@ -76,14 +81,15 @@ pub struct App {
     picking_since: Option<Instant>,
 
     // 热键
-    hotkey_mgr: Option<HotkeyManager>,
+    // 只为保持生命周期：drop 时注销全局热键。事件走总线，不从这里 poll。
+    _hotkey_mgr: Option<HotkeyManager>,
     hotkey_sm: HotkeyStateMachine,
 
     // 系统托盘
     tray: Option<Tray>,
     // 是否正在真正退出（托盘“退出”触发），用于放行关闭请求
     quitting: bool,
-    // 还需强制唤醒多少帧（窗口隐藏时 egui 不会自然重绘，见 process_tray）
+    // 还需强制唤醒多少帧（窗口隐藏时 egui 不会自然重绘，见 handle_tray）
     wake_pending: u8,
 
     // 语音控制运行时（None 表示未开启）
@@ -129,6 +135,9 @@ struct WakewordTrainingState {
     status_msg: String,        // 状态消息
     capture: Option<AudioCapture>, // 音频采集器
     recording_buffer: Vec<i16>, // 当前录制的缓冲区
+    /// 训练期间的定时唤醒器：录音要靠 update() 连续抽帧，
+    /// 不能指望窗口自然重绘（隐藏/失焦时就断了）。drop 即停。
+    _ticker: WakeTicker,
 }
 
 /// 配置窗口标签页
@@ -182,8 +191,11 @@ impl App {
             slots.push(slot);
         }
 
+        // 事件总线先建好，各事件源共用它的 sender
+        let events = MainEventBus::new();
+
         // 尝试启动热键
-        let (hotkey_mgr, status) = match HotkeyManager::start() {
+        let (hotkey_mgr, status) = match HotkeyManager::start(events.sender()) {
             Ok(mgr) => (
                 Some(mgr),
                 format!("已加载 {} 个脚本；热键已就绪 (Ctrl+Shift+0~9)", scripts.len()),
@@ -192,7 +204,7 @@ impl App {
         };
 
         // 创建托盘（失败不致命，仅记录）
-        let tray = match Tray::new() {
+        let tray = match Tray::new(events.sender()) {
             Ok(t) => Some(t),
             Err(e) => {
                 eprintln!("托盘创建失败: {}", e);
@@ -204,6 +216,7 @@ impl App {
         vlog::set_enabled(config.general.log_enabled);
 
         Self {
+            events,
             scripts,
             scripts_dir,
             slots,
@@ -215,7 +228,7 @@ impl App {
             show_hotkey_help: false,
             color_picker: ColorPicker::default(),
             picking_since: None,
-            hotkey_mgr,
+            _hotkey_mgr: hotkey_mgr,
             hotkey_sm: HotkeyStateMachine::new(),
             tray,
             quitting: false,
@@ -404,7 +417,7 @@ impl App {
             api_key: self.baidu_api_key.clone(),
             secret_key: self.baidu_secret_key.clone(),
         };
-        self.voice = Some(VoiceRuntime::start(cfg));
+        self.voice = Some(VoiceRuntime::start(cfg, self.events.sender()));
         self.status = "语音控制已开启，正在初始化...".to_string();
     }
 
@@ -416,22 +429,25 @@ impl App {
         }
     }
 
-    /// 处理语音后台线程回传的事件
-    fn process_voice(&mut self) {
-        let Some(voice) = &self.voice else { return };
-        let events = voice.poll();
+    /// 处理单个语音事件
+    fn handle_voice_event(&mut self, ev: VoiceEvent) {
+        // 语音已关闭时丢弃残留事件：stop_voice() 会 join 线程，线程退出前发出的
+        // Stopped/Status 可能还留在总线里。若不丢弃，这些旧事件会覆盖状态栏，
+        // 甚至在"关闭→立刻重开"时把刚建好的 self.voice 误清成 None。
+        if self.voice.is_none() {
+            return;
+        }
+
         let mut stopped = false;
-        for ev in events {
-            match ev {
-                VoiceEvent::Status(s) => self.status = format!("🎤 {}", s),
-                VoiceEvent::Woke => self.status = "🎤 已唤醒，请说指令...".to_string(),
-                VoiceEvent::Recognized(text) => {
-                    self.last_voice_text = text.clone();
-                    self.handle_voice_text(&text);
-                }
-                VoiceEvent::Error(e) => self.status = format!("🎤 语音错误: {}", e),
-                VoiceEvent::Stopped => stopped = true,
+        match ev {
+            VoiceEvent::Status(s) => self.status = format!("🎤 {}", s),
+            VoiceEvent::Woke => self.status = "🎤 已唤醒，请说指令...".to_string(),
+            VoiceEvent::Recognized(text) => {
+                self.last_voice_text = text.clone();
+                self.handle_voice_text(&text);
             }
+            VoiceEvent::Error(e) => self.status = format!("🎤 语音错误: {}", e),
+            VoiceEvent::Stopped => stopped = true,
         }
         if stopped {
             // 后台线程已退出（多为出错自停），清理句柄
@@ -653,62 +669,65 @@ impl App {
         self.status = format!("热键：单次执行全部，共 {} 个窗口（1秒后开始）", n);
     }
 
-    /// 处理热键事件
-    fn process_hotkeys(&mut self) {
-        let Some(mgr) = &self.hotkey_mgr else { return };
-        let keys = mgr.poll();
-        for key in keys {
-            // 优先检查是否处于发送模式
-            if self.hotkey_sm.in_send_mode() {
-                if let Some(action) = self.hotkey_sm.on_send_key(key) {
-                    self.apply_action(action);
-                    continue;
-                }
-            }
+    /// 处理单个热键事件
+    fn handle_hotkey(&mut self, key: HotkeyKey) {
+        // 热键总开关关闭时忽略所有热键
+        if !self.hotkey_enabled {
+            return;
+        }
 
-            match key {
-                HotkeyKey::Digit(d) => match d {
-                    1..=8 => {
-                        if let Some(action) = self.hotkey_sm.on_select(d) {
-                            self.apply_action(action);
-                        }
-                    }
-                    9 => {
-                        let action = self.hotkey_sm.on_start();
+        // 优先检查是否处于发送模式
+        if self.hotkey_sm.in_send_mode() {
+            if let Some(action) = self.hotkey_sm.on_send_key(key) {
+                self.apply_action(action);
+                return;
+            }
+        }
+
+        match key {
+            HotkeyKey::Digit(d) => match d {
+                1..=8 => {
+                    if let Some(action) = self.hotkey_sm.on_select(d) {
                         self.apply_action(action);
                     }
-                    0 => {
-                        let action = self.hotkey_sm.on_stop();
-                        self.apply_action(action);
-                    }
-                    _ => {}
-                },
-                HotkeyKey::Minus => {
-                    let action = self.hotkey_sm.on_run_once();
+                }
+                9 => {
+                    let action = self.hotkey_sm.on_start();
                     self.apply_action(action);
                 }
-                HotkeyKey::Insert => {
-                    self.hotkey_sm.on_insert();
-                    self.status = "🎯 发送模式已激活（2秒内按任意键发送）".to_string();
+                0 => {
+                    let action = self.hotkey_sm.on_stop();
+                    self.apply_action(action);
                 }
-                _ => {
-                    // 其他键在非发送模式下忽略
+                _ => {}
+            },
+            HotkeyKey::Minus => {
+                let action = self.hotkey_sm.on_run_once();
+                self.apply_action(action);
+            }
+            HotkeyKey::Insert => {
+                if !self.hotkey_impromptu_enabled {
+                    return;
                 }
+                self.hotkey_sm.on_insert();
+                self.status = "🎯 发送模式已激活（2秒内按任意键发送）".to_string();
+            }
+            _ => {
+                // 其他键在非发送模式下忽略
             }
         }
     }
 
-    /// 把主窗口 HWND 交给托盘（只需成功一次）。
-    /// 托盘事件回调靠它在窗口隐藏时唤醒 update。
+    /// 把主窗口 HWND 交给事件总线（只需成功一次）。
+    /// 各后台事件源靠它在窗口隐藏时唤醒 update。
     fn capture_main_hwnd(&mut self, frame: &eframe::Frame) {
-        let Some(tray) = &self.tray else { return };
-        if tray.has_main_hwnd() {
+        if self.events.has_main_hwnd() {
             return;
         }
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if let Ok(handle) = frame.window_handle() {
             if let RawWindowHandle::Win32(h) = handle.as_raw() {
-                tray.set_main_hwnd(isize::from(h.hwnd));
+                self.events.set_main_hwnd(isize::from(h.hwnd));
             }
         }
     }
@@ -719,47 +738,51 @@ impl App {
     /// 只把计数存起来是没用的（pump 永远等不到执行机会）。
     fn request_wake(&mut self, frames: u8) {
         self.wake_pending = frames;
-        if let Some(tray) = &self.tray {
-            tray.wake_main_window();
-        }
+        self.events.wake();
     }
 
     /// 消耗待唤醒帧数：窗口隐藏时 egui 不会自然重绘，
-    /// 靠托盘的 PostMessage 续帧，直到关闭真正生效。
+    /// 靠 PostMessage 续帧，直到关闭真正生效。
     fn pump_pending_wake(&mut self) {
         if self.wake_pending == 0 {
             return;
         }
         self.wake_pending -= 1;
-        if let Some(tray) = &self.tray {
-            tray.wake_main_window();
+        self.events.wake();
+    }
+
+    /// 从总线取出全部后台事件并分发（每帧一次）
+    fn dispatch_events(&mut self, ctx: &egui::Context) {
+        for event in self.events.poll() {
+            match event {
+                MainEvent::Tray(cmd) => self.handle_tray(ctx, cmd),
+                MainEvent::Hotkey(key) => self.handle_hotkey(key),
+                MainEvent::Voice(ev) => self.handle_voice_event(ev),
+            }
         }
     }
 
-    /// 处理托盘事件
-    fn process_tray(&mut self, ctx: &egui::Context) {
-        let Some(tray) = &self.tray else { return };
-        for cmd in tray.poll() {
-            match cmd {
-                TrayCommand::Show => {
-                    // 先让窗口重新可见，再恢复正常显示状态（隐藏期间可能仍是最小化）
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    self.status = "已从托盘恢复".to_string();
-                }
-                TrayCommand::Quit => {
-                    // 停止所有运行，落盘配置，标记真正退出，然后关闭
-                    self.stop_voice();
-                    self.stop_all();
-                    self.save_config();
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    // 关闭要两帧才生效（本帧投递 Close 事件，下一帧才被判定为
-                    // close_requested 并退出）。窗口隐藏时不会自然重绘，
-                    // 必须显式续帧，否则进程会卡住不退。
-                    self.request_wake(3);
-                }
+    /// 处理单个托盘事件
+    fn handle_tray(&mut self, ctx: &egui::Context, cmd: TrayCommand) {
+        match cmd {
+            TrayCommand::Show => {
+                // 先让窗口重新可见，再恢复正常显示状态（隐藏期间可能仍是最小化）
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.status = "已从托盘恢复".to_string();
+            }
+            TrayCommand::Quit => {
+                // 停止所有运行，落盘配置，标记真正退出，然后关闭
+                self.stop_voice();
+                self.stop_all();
+                self.save_config();
+                self.quitting = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                // 关闭要两帧才生效（本帧投递 Close 事件，下一帧才被判定为
+                // close_requested 并退出）。窗口隐藏时不会自然重绘，
+                // 必须显式续帧，否则进程会卡住不退。
+                self.request_wake(3);
             }
         }
     }
@@ -905,9 +928,8 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.capture_main_hwnd(_frame);
         self.pump_pending_wake();
-        self.process_hotkeys();
-        self.process_tray(ctx);
-        self.process_voice();
+        // 所有后台事件（托盘/热键/语音）统一从总线取出分发
+        self.dispatch_events(ctx);
         self.process_wakeword_training();
         self.handle_grabbing();
         self.handle_picking();
@@ -923,8 +945,8 @@ impl eframe::App for App {
             }
         }
 
-        // 无条件定时重绘，保证热键轮询有稳定节奏（否则空闲时 egui 不重绘，
-        // 热键事件会滞留在 channel 里直到下次交互才被处理，表现为“启动很慢”）。
+        // 定时重绘：后台事件已由总线主动唤醒，这里只负责"没有事件也要推进"的
+        // 时间驱动逻辑（抓取/取色倒计时、窗口有效性检查、状态栏刷新）。
         ctx.request_repaint_after(std::time::Duration::from_millis(30));
 
         self.ui_bottom_status(ctx);
@@ -1712,6 +1734,8 @@ impl App {
             status_msg: "准备录制第 1 遍".to_string(),
             capture,
             recording_buffer: Vec::new(),
+            // 20ms 一次，保证录音期间 update 稳定被调用
+            _ticker: WakeTicker::start(self.events.sender(), 20),
         });
     }
 
