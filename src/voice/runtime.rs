@@ -182,7 +182,10 @@ fn run_loop(config: VoiceConfig, stop_rx: Receiver<()>, events: EventSender) {
 
                 let done_audio = match recorder.process(&frame) {
                     RecordState::Done(audio) => {
-                        vlog!("[voice] VAD 检测到静音，录音结束");
+                        vlog!(
+                            "[voice] VAD 检测到静音，录音结束（噪声底 {:.1}）",
+                            recorder.noise_floor()
+                        );
                         Some(audio)
                     }
                     RecordState::Recording => {

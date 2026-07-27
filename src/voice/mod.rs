@@ -9,6 +9,7 @@ pub mod ring_buffer;
 pub mod capture;
 pub mod wakeword;
 pub mod vad;
+pub mod dsp;
 pub mod audio_util;
 pub mod baidu_asr;
 pub mod intent;

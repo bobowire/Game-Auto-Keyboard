@@ -6,6 +6,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::voice::dsp::PreFilter;
+
 /// 目标采样率（唤醒词检测和 ASR 通用）
 pub const TARGET_SAMPLE_RATE: u32 = 16000;
 
@@ -105,11 +107,22 @@ fn resample(input: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
     out
 }
 
-/// 处理一帧：转单声道 + 重采样，然后发送
-fn process_and_send(samples: Vec<i16>, channels: usize, input_rate: u32, tx: &Sender<Vec<i16>>) {
-    let mono = to_mono(&samples, channels);
-    let resampled = resample(&mono, input_rate, TARGET_SAMPLE_RATE);
+/// 处理一帧：转单声道 → 抗混叠 → 重采样 → 去低频轰鸣，然后发送
+///
+/// 滤波顺序很关键：抗混叠必须在重采样**之前**，否则高频已经折叠进语音频段，
+/// 事后再滤也救不回来。
+fn process_and_send(
+    samples: Vec<i16>,
+    channels: usize,
+    input_rate: u32,
+    filter: &mut PreFilter,
+    tx: &Sender<Vec<i16>>,
+) {
+    let mut mono = to_mono(&samples, channels);
+    filter.apply_anti_alias(&mut mono);
+    let mut resampled = resample(&mono, input_rate, TARGET_SAMPLE_RATE);
     if !resampled.is_empty() {
+        filter.apply_rumble_filter(&mut resampled);
         let _ = tx.send(resampled);
     }
 }
@@ -121,6 +134,7 @@ fn build_stream_f32(
     input_rate: u32,
     tx: Sender<Vec<i16>>,
 ) -> Result<Stream, String> {
+    let mut filter = PreFilter::new(input_rate, TARGET_SAMPLE_RATE);
     device
         .build_input_stream(
             config,
@@ -129,7 +143,7 @@ fn build_stream_f32(
                     .iter()
                     .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
                     .collect();
-                process_and_send(samples, channels, input_rate, &tx);
+                process_and_send(samples, channels, input_rate, &mut filter, &tx);
             },
             |err| eprintln!("音频采集错误: {}", err),
             None,
@@ -144,11 +158,12 @@ fn build_stream_i16(
     input_rate: u32,
     tx: Sender<Vec<i16>>,
 ) -> Result<Stream, String> {
+    let mut filter = PreFilter::new(input_rate, TARGET_SAMPLE_RATE);
     device
         .build_input_stream(
             config,
             move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                process_and_send(data.to_vec(), channels, input_rate, &tx);
+                process_and_send(data.to_vec(), channels, input_rate, &mut filter, &tx);
             },
             |err| eprintln!("音频采集错误: {}", err),
             None,
@@ -163,6 +178,7 @@ fn build_stream_u16(
     input_rate: u32,
     tx: Sender<Vec<i16>>,
 ) -> Result<Stream, String> {
+    let mut filter = PreFilter::new(input_rate, TARGET_SAMPLE_RATE);
     device
         .build_input_stream(
             config,
@@ -171,7 +187,7 @@ fn build_stream_u16(
                     .iter()
                     .map(|&s| (s as i32 - 32768) as i16)
                     .collect();
-                process_and_send(samples, channels, input_rate, &tx);
+                process_and_send(samples, channels, input_rate, &mut filter, &tx);
             },
             |err| eprintln!("音频采集错误: {}", err),
             None,
