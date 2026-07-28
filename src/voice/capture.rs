@@ -107,23 +107,32 @@ fn resample(input: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
     out
 }
 
-/// 处理一帧：转单声道 → 抗混叠 → 重采样 → 去低频轰鸣，然后发送
+/// 处理一帧：转单声道 → 抗混叠 → 重采样 → 去低频轰鸣 → RNNoise 降噪，然后发送
 ///
-/// 滤波顺序很关键：抗混叠必须在重采样**之前**，否则高频已经折叠进语音频段，
-/// 事后再滤也救不回来。
+/// 滤波顺序很关键：
+/// 1. 抗混叠必须在重采样**之前**，否则高频已经折叠进语音频段，事后再滤也救不回来
+/// 2. RNNoise 在最后，确保输入已经是干净的 16kHz 音频
+///
+/// RNNoise 按 10ms 整帧工作，所以本次回调可能只吐出一部分样本、剩下的留在
+/// 滤波器内部等下一次回调。发送的是降噪输出本身，不能是原始切片——否则尾部
+/// 会混进未降噪的数据。降噪输出为空（攒不满一帧）时这次就不发。
 fn process_and_send(
     samples: Vec<i16>,
     channels: usize,
     input_rate: u32,
     filter: &mut PreFilter,
+    denoised: &mut Vec<i16>,
     tx: &Sender<Vec<i16>>,
 ) {
     let mut mono = to_mono(&samples, channels);
     filter.apply_anti_alias(&mut mono);
     let mut resampled = resample(&mono, input_rate, TARGET_SAMPLE_RATE);
-    if !resampled.is_empty() {
-        filter.apply_rumble_filter(&mut resampled);
-        let _ = tx.send(resampled);
+    if resampled.is_empty() {
+        return;
+    }
+    filter.apply_rumble_filter(&mut resampled);
+    if filter.apply_denoise(&resampled, denoised) > 0 {
+        let _ = tx.send(denoised.clone());
     }
 }
 
@@ -135,6 +144,8 @@ fn build_stream_f32(
     tx: Sender<Vec<i16>>,
 ) -> Result<Stream, String> {
     let mut filter = PreFilter::new(input_rate, TARGET_SAMPLE_RATE);
+    // 降噪输出缓冲，复用避免在音频回调里反复分配
+    let mut denoised = Vec::new();
     device
         .build_input_stream(
             config,
@@ -143,7 +154,7 @@ fn build_stream_f32(
                     .iter()
                     .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
                     .collect();
-                process_and_send(samples, channels, input_rate, &mut filter, &tx);
+                process_and_send(samples, channels, input_rate, &mut filter, &mut denoised, &tx);
             },
             |err| eprintln!("音频采集错误: {}", err),
             None,
@@ -159,11 +170,19 @@ fn build_stream_i16(
     tx: Sender<Vec<i16>>,
 ) -> Result<Stream, String> {
     let mut filter = PreFilter::new(input_rate, TARGET_SAMPLE_RATE);
+    let mut denoised = Vec::new();
     device
         .build_input_stream(
             config,
             move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                process_and_send(data.to_vec(), channels, input_rate, &mut filter, &tx);
+                process_and_send(
+                    data.to_vec(),
+                    channels,
+                    input_rate,
+                    &mut filter,
+                    &mut denoised,
+                    &tx,
+                );
             },
             |err| eprintln!("音频采集错误: {}", err),
             None,
@@ -179,6 +198,7 @@ fn build_stream_u16(
     tx: Sender<Vec<i16>>,
 ) -> Result<Stream, String> {
     let mut filter = PreFilter::new(input_rate, TARGET_SAMPLE_RATE);
+    let mut denoised = Vec::new();
     device
         .build_input_stream(
             config,
@@ -187,7 +207,7 @@ fn build_stream_u16(
                     .iter()
                     .map(|&s| (s as i32 - 32768) as i16)
                     .collect();
-                process_and_send(samples, channels, input_rate, &mut filter, &tx);
+                process_and_send(samples, channels, input_rate, &mut filter, &mut denoised, &tx);
             },
             |err| eprintln!("音频采集错误: {}", err),
             None,

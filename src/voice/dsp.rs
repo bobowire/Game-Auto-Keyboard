@@ -1,14 +1,16 @@
-// 音频前处理 DSP：抗混叠低通 + 去低频轰鸣高通
+// 音频前处理 DSP：抗混叠低通 + 去低频轰鸣高通 + RNNoise 降噪
 //
 // 采集侧原来直接线性插值降采样，48kHz→16kHz 时超过 8kHz 的成分会折叠（混叠）
 // 回语音频段变成宽带噪声，既伤唤醒词准确率，也让 VAD 更容易把噪声当语音。
 // 这里在降采样前加 4 阶 Butterworth 低通（截止 7.2kHz），降采样后再加 2 阶
-// 高通（80Hz）滤掉风扇/电流的低频轰鸣。
+// 高通（80Hz）滤掉风扇/电流的低频轰鸣，最后用 RNNoise 深度学习降噪抑制
+// 键盘声、鼠标点击等非语音噪声。
 //
 // 滤波器状态必须跨 cpal 回调保持，否则每个帧边界都会产生不连续的爆音，
 // 所以做成结构体由采集流持有。
 
 use std::f32::consts::PI;
+use nnnoiseless::DenoiseState;
 
 /// 4 阶 Butterworth 级联所需的两级 Q 值
 const BUTTERWORTH_Q4: [f32; 2] = [0.541_196, 1.306_563];
@@ -18,6 +20,8 @@ const ANTI_ALIAS_CUTOFF_HZ: f32 = 7200.0;
 const HIGHPASS_CUTOFF_HZ: f32 = 80.0;
 /// 二阶 Butterworth（最平坦）的 Q
 const Q_BUTTERWORTH_2: f32 = 0.707_106_8;
+/// RNNoise 处理帧长：10ms @ 48kHz = 480 样本
+const RNNOISE_FRAME_SIZE: usize = 480;
 
 /// 双二阶（biquad）IIR 滤波器，Direct Form I
 ///
@@ -99,7 +103,7 @@ impl Biquad {
     }
 }
 
-/// 采集前处理链：降采样前抗混叠 + 降采样后去轰鸣
+/// 采集前处理链：降采样前抗混叠 + 降采样后去轰鸣 + RNNoise 降噪
 ///
 /// 由采集流独占持有，状态跨 cpal 回调连续。
 pub struct PreFilter {
@@ -109,6 +113,10 @@ pub struct PreFilter {
     rumble: Biquad,
     /// 输入采样率等于目标采样率时无需抗混叠
     needs_anti_alias: bool,
+    /// RNNoise 降噪状态（48kHz，每次处理 480 样本）
+    denoise: DenoiseState<'static>,
+    /// RNNoise 的缓冲区（积攒到 480 样本才处理）
+    denoise_buffer: Vec<f32>,
 }
 
 impl PreFilter {
@@ -124,6 +132,8 @@ impl PreFilter {
             ],
             rumble: Biquad::highpass(target_rate as f32, HIGHPASS_CUTOFF_HZ, Q_BUTTERWORTH_2),
             needs_anti_alias: input_rate > target_rate,
+            denoise: *DenoiseState::new(),
+            denoise_buffer: Vec::with_capacity(RNNOISE_FRAME_SIZE * 2),
         }
     }
 
@@ -144,6 +154,49 @@ impl PreFilter {
         for s in samples.iter_mut() {
             *s = clamp_to_i16(self.rumble.process(*s as f32));
         }
+    }
+
+    /// RNNoise 降噪，返回实际降噪后的样本数
+    ///
+    /// RNNoise 固定要求 48kHz、每帧 480 样本（10ms）。本项目链路是 16kHz，
+    /// 所以这里 3 倍零阶保持上采样 → 降噪 → 3:1 抽取回 16kHz。
+    ///
+    /// 返回值是写入 `samples` 前缀的有效长度：输入不足整帧的尾巴会留在
+    /// `denoise_buffer` 里等下一次回调，**调用方必须按返回值截断**，否则
+    /// 尾部残留的是未降噪的旧数据。
+    ///
+    /// 注意：零阶保持 + 抽取是廉价方案，会引入镜像/混叠残留；抽取时取 3 点
+    /// 均值而非首样本，正好抵掉一部分保持带来的高频镜像。真要更干净应该在
+    /// 降采样之前、原生 48kHz 上做降噪。
+    #[must_use]
+    pub fn apply_denoise(&mut self, samples: &[i16], out_buf: &mut Vec<i16>) -> usize {
+        out_buf.clear();
+
+        // 16kHz → 48kHz：零阶保持，每个样本重复 3 次
+        for &sample in samples {
+            let f = sample as f32;
+            self.denoise_buffer.push(f);
+            self.denoise_buffer.push(f);
+            self.denoise_buffer.push(f);
+        }
+
+        // 按 480 样本（10ms @ 48kHz）整帧处理，不足一帧的留到下次
+        while self.denoise_buffer.len() >= RNNOISE_FRAME_SIZE {
+            let mut input = [0.0f32; RNNOISE_FRAME_SIZE];
+            let mut denoised = [0.0f32; RNNOISE_FRAME_SIZE];
+            input.copy_from_slice(&self.denoise_buffer[..RNNOISE_FRAME_SIZE]);
+            self.denoise_buffer.drain(..RNNOISE_FRAME_SIZE);
+
+            self.denoise.process_frame(&mut denoised, &input);
+
+            // 48kHz → 16kHz：每 3 样本取均值（兼作抽取前的粗低通）
+            for chunk in denoised.chunks_exact(3) {
+                let avg = (chunk[0] + chunk[1] + chunk[2]) / 3.0;
+                out_buf.push(clamp_to_i16(avg));
+            }
+        }
+
+        out_buf.len()
     }
 }
 
@@ -221,6 +274,45 @@ mod tests {
         let mut same = original.clone();
         PreFilter::new(16000, 16000).apply_anti_alias(&mut same);
         assert_eq!(same, original);
+    }
+
+    #[test]
+    fn denoise_only_emits_whole_frames() {
+        // 输入 160 样本 @16k = 480 @48k = 恰好一帧 → 吐 160
+        let mut f = PreFilter::new(48000, 16000);
+        let mut out = Vec::new();
+        assert_eq!(f.apply_denoise(&sine(1000.0, 16000.0, 160), &mut out), 160);
+        assert_eq!(out.len(), 160);
+
+        // 不足一帧 → 这次不吐，全部留在内部缓冲
+        let mut f2 = PreFilter::new(48000, 16000);
+        let mut out2 = Vec::new();
+        assert_eq!(f2.apply_denoise(&sine(1000.0, 16000.0, 100), &mut out2), 0);
+        assert!(out2.is_empty());
+    }
+
+    #[test]
+    fn denoise_conserves_samples_across_ragged_callbacks() {
+        // 回调长度不是 160 的整数倍时，攒够的部分照吐、余量必须留到下次，
+        // 总输出量不能多也不能少（这是尾部混入未降噪数据的回归测试）
+        let mut f = PreFilter::new(48000, 16000);
+        let mut out = Vec::new();
+        let mut total_in = 0usize;
+        let mut total_out = 0usize;
+
+        for &len in &[470usize, 231, 512, 97, 1024] {
+            total_in += len;
+            total_out += f.apply_denoise(&sine(440.0, 16000.0, len), &mut out);
+        }
+
+        // 输出量 = 已完成的整帧数 × 160，余量 ≤ 一帧
+        assert_eq!(total_out % 160, 0, "只能按 160 样本整帧输出");
+        assert!(
+            total_in - total_out < 160,
+            "未输出的余量应少于一帧：in={} out={}",
+            total_in,
+            total_out
+        );
     }
 
     #[test]
