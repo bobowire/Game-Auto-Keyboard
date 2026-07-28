@@ -5,7 +5,7 @@ use crate::config::AppConfig;
 use crate::event_bus::{MainEvent, MainEventBus, WakeTicker};
 use crate::hotkey::{HotkeyAction, HotkeyKey, HotkeyManager, HotkeyStateMachine};
 use crate::runner::Runner;
-use crate::script::{load_dir, ScriptFile, ScriptSettings};
+use crate::script::{load_dir, ScriptFile};
 use crate::tray::{Tray, TrayCommand};
 use crate::utils::win32;
 use crate::vlog;
@@ -107,6 +107,7 @@ pub struct App {
     // 通用配置（编辑用），从 config 加载
     log_enabled: bool,
     save_wakeword_samples: bool,
+    save_asr_audio: bool,
 
     // 统一配置窗口
     show_settings: bool,
@@ -241,6 +242,7 @@ impl App {
             hotkey_impromptu_enabled: config.hotkey.impromptu_enabled,
             log_enabled: config.general.log_enabled,
             save_wakeword_samples: config.general.save_wakeword_samples,
+            save_asr_audio: config.general.save_asr_audio,
             show_settings: false,
             settings_tab: SettingsTab::General,
             show_voice_help: false,
@@ -282,6 +284,7 @@ impl App {
         cfg.hotkey.impromptu_enabled = self.hotkey_impromptu_enabled;
         cfg.general.log_enabled = self.log_enabled;
         cfg.general.save_wakeword_samples = self.save_wakeword_samples;
+        cfg.general.save_asr_audio = self.save_asr_audio;
 
         // 同步日志开关到 vlog 模块
         vlog::set_enabled(self.log_enabled);
@@ -416,6 +419,7 @@ impl App {
             threshold: WAKEWORD_THRESHOLD,
             api_key: self.baidu_api_key.clone(),
             secret_key: self.baidu_secret_key.clone(),
+            save_asr_audio: self.save_asr_audio,
         };
         self.voice = Some(VoiceRuntime::start(cfg, self.events.sender()));
         self.status = "语音控制已开启，正在初始化...".to_string();
@@ -1333,6 +1337,15 @@ impl App {
         ui.add_space(2.0);
         ui.label("开启后，训练唤醒词时会保存录音样本到 wakeword_samples/ 目录");
         ui.label("关闭后，训练时使用临时文件，训练完成后自动删除");
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("语音识别调试").strong());
+        ui.add_space(4.0);
+
+        ui.checkbox(&mut self.save_asr_audio, "保存 ASR 音频");
+        ui.add_space(2.0);
+        ui.label("开启后，将发送给百度 ASR 的音频保存到 sendvoice/ 目录");
+        ui.label("关闭后，不保存音频文件（默认）");
     }
 
     /// 语音配置标签页

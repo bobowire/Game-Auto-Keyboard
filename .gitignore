@@ -32,5 +32,6 @@ Desktop.ini
 # 语音测试产物（每人声音不同，运行时生成）
 *.rpw
 /wakeword_samples/
+/sendvoice/
 command_*.wav
 config.json

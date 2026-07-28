@@ -18,6 +18,8 @@ pub struct BaiduAsr {
     token: Option<String>,
     /// token 获取时间（30天有效期）
     token_obtained: Option<Instant>,
+    /// 是否保存 ASR 音频
+    save_audio: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,11 +44,22 @@ impl BaiduAsr {
             secret_key,
             token: None,
             token_obtained: None,
+            save_audio: false,
         }
+    }
+
+    /// 设置是否保存 ASR 音频
+    pub fn set_save_audio(&mut self, save: bool) {
+        self.save_audio = save;
     }
 
     /// 识别音频（i16 单声道 16kHz PCM）
     pub fn recognize(&mut self, audio: &[i16]) -> Result<String, String> {
+        // 保存音频（如果开启）
+        if self.save_audio {
+            self.save_audio_file(audio);
+        }
+
         // 确保 token 有效
         self.ensure_token()?;
         let token = self.token.as_ref().unwrap();
@@ -95,6 +108,70 @@ impl BaiduAsr {
                 resp.err_msg.unwrap_or_default()
             ))
         }
+    }
+
+    /// 保存音频文件到 sendvoice 目录
+    fn save_audio_file(&self, audio: &[i16]) {
+        use std::fs;
+
+        // 创建目录（如果不存在）
+        if let Err(e) = fs::create_dir_all("sendvoice") {
+            eprintln!("创建 sendvoice 目录失败: {}", e);
+            return;
+        }
+
+        // 生成带时间戳的文件名
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let filename = format!("sendvoice/asr_{}.wav", timestamp);
+
+        // 写入 WAV 文件
+        if let Err(e) = self.write_wav(&filename, audio) {
+            eprintln!("保存 ASR 音频失败: {}", e);
+        }
+    }
+
+    /// 写入 WAV 文件（16kHz 单声道 PCM）
+    fn write_wav(&self, path: &str, samples: &[i16]) -> std::io::Result<()> {
+        use std::fs::File;
+        use std::io::Write;
+
+        let mut file = File::create(path)?;
+
+        // WAV 文件头
+        let sample_rate = 16000u32;
+        let channels = 1u16;
+        let bits_per_sample = 16u16;
+        let byte_rate = sample_rate * channels as u32 * bits_per_sample as u32 / 8;
+        let block_align = channels * bits_per_sample / 8;
+        let data_size = (samples.len() * 2) as u32;
+        let file_size = 36 + data_size;
+
+        // RIFF header
+        file.write_all(b"RIFF")?;
+        file.write_all(&file_size.to_le_bytes())?;
+        file.write_all(b"WAVE")?;
+
+        // fmt chunk
+        file.write_all(b"fmt ")?;
+        file.write_all(&16u32.to_le_bytes())?; // chunk size
+        file.write_all(&1u16.to_le_bytes())?;  // audio format (PCM)
+        file.write_all(&channels.to_le_bytes())?;
+        file.write_all(&sample_rate.to_le_bytes())?;
+        file.write_all(&byte_rate.to_le_bytes())?;
+        file.write_all(&block_align.to_le_bytes())?;
+        file.write_all(&bits_per_sample.to_le_bytes())?;
+
+        // data chunk
+        file.write_all(b"data")?;
+        file.write_all(&data_size.to_le_bytes())?;
+        for &sample in samples {
+            file.write_all(&sample.to_le_bytes())?;
+        }
+
+        Ok(())
     }
 
     /// 确保 token 有效（过期或不存在时重新获取）

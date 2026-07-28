@@ -44,6 +44,8 @@ pub struct VoiceConfig {
     pub api_key: String,
     /// 百度 Secret Key
     pub secret_key: String,
+    /// 是否保存 ASR 音频到 sendvoice 目录
+    pub save_asr_audio: bool,
 }
 
 /// UI 侧持有的运行时句柄
@@ -140,6 +142,7 @@ fn run_loop(config: VoiceConfig, stop_rx: Receiver<()>, events: EventSender) {
         };
 
     let mut asr = BaiduAsr::new(config.api_key, config.secret_key);
+    asr.set_save_audio(config.save_asr_audio);
 
     // 3 秒环形缓冲，唤醒后回溯取指令起点
     let mut ring = AudioRingBuffer::new(TARGET_SAMPLE_RATE as usize, 3);

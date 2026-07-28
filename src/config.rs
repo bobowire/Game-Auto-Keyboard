@@ -63,6 +63,9 @@ pub struct GeneralConfig {
     /// 唤醒词训练样本保存开关（禁用后不创建 wakeword_samples 目录）
     #[serde(default)]
     pub save_wakeword_samples: bool,
+    /// ASR 音频保存开关（启用后将发送给 ASR 的音频保存到 sendvoice 目录）
+    #[serde(default)]
+    pub save_asr_audio: bool,
 }
 
 fn default_true() -> bool {
@@ -83,6 +86,7 @@ impl Default for GeneralConfig {
         Self {
             log_enabled: true,
             save_wakeword_samples: false,
+            save_asr_audio: false,
         }
     }
 }
