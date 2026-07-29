@@ -148,6 +148,7 @@ enum SettingsTab {
     General,
     Voice,
     Hotkey,
+    About,
 }
 
 impl App {
@@ -1300,6 +1301,7 @@ impl App {
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "🔧 通用");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::Voice, "🎤 语音控制");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::Hotkey, "⌨️ 热键配置");
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::About, "ℹ️ 关于");
                 });
                 ui.separator();
 
@@ -1307,6 +1309,7 @@ impl App {
                     SettingsTab::General => self.ui_settings_general(ui, &mut act_save),
                     SettingsTab::Voice => self.ui_settings_voice(ui, &mut act_save),
                     SettingsTab::Hotkey => self.ui_settings_hotkey(ui, &mut act_save),
+                    SettingsTab::About => self.ui_settings_about(ui),
                 }
 
                 ui.separator();
@@ -1495,6 +1498,49 @@ impl App {
         ui.label("• 即兴发送：按 Ctrl+Shift+Insert 进入发送模式，2秒内按任意支持的键");
         ui.label("• 热键仅在程序运行时生效，关闭后自动注销");
         ui.label("• 点击右上角「❓ 热键说明」查看详细使用指南");
+    }
+
+    /// 关于页面
+    fn ui_settings_about(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(16.0);
+            ui.heading("Game Auto Keyboard");
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(format!("版本 {}", env!("BUILD_DATE"))).weak());
+            ui.add_space(16.0);
+        });
+
+        ui.add_space(8.0);
+
+        ui.label(egui::RichText::new("作者").strong());
+        ui.add_space(2.0);
+        ui.label("wireboy");
+        ui.add_space(12.0);
+
+        ui.label(egui::RichText::new("源码仓库").strong());
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.label("GitHub:");
+            ui.hyperlink_to(
+                "bobowire/Game-Auto-Keyboard",
+                "https://github.com/bobowire/Game-Auto-Keyboard",
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("Gitee:");
+            ui.hyperlink_to(
+                "wireboy/game-multi-utils",
+                "https://gitee.com/wireboy/game-multi-utils",
+            );
+        });
+        ui.add_space(12.0);
+
+        ui.label(egui::RichText::new("功能简介").strong());
+        ui.add_space(2.0);
+        ui.label("• 多窗口脚本自动化执行");
+        ui.label("• 语音控制（唤醒词 + ASR 识别）");
+        ui.label("• 热键触发、颜色检测、自动循环等");
+        ui.label("• 支持自定义脚本（.ag 文件）");
     }
 
     /// 语音帮助文档窗口
