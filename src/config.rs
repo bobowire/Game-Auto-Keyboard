@@ -66,6 +66,9 @@ pub struct GeneralConfig {
     /// ASR 音频保存开关（启用后将发送给 ASR 的音频保存到 sendvoice 目录）
     #[serde(default)]
     pub save_asr_audio: bool,
+    /// 拼音辅助匹配开关（字符匹配之外再做一轮忽略声调的拼音匹配，取更优结果）
+    #[serde(default)]
+    pub pinyin_assist: bool,
 }
 
 fn default_true() -> bool {
@@ -87,6 +90,7 @@ impl Default for GeneralConfig {
             log_enabled: true,
             save_wakeword_samples: false,
             save_asr_audio: false,
+            pinyin_assist: false,
         }
     }
 }
@@ -180,5 +184,31 @@ impl AppConfig {
     /// 便捷：返回配置文件路径
     pub fn path() -> PathBuf {
         get_config_path()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pinyin_assist_default_and_roundtrip() {
+        // 旧配置（无 pinyin_assist 字段）应反序列化为 false（#[serde(default)]）
+        let old = serde_json::from_str::<GeneralConfig>(
+            r#"{"log_enabled":true,"save_wakeword_samples":false,"save_asr_audio":false}"#,
+        )
+        .unwrap();
+        assert!(!old.pinyin_assist);
+
+        // 往返序列化应保留 pinyin_assist = true
+        let cfg = GeneralConfig {
+            log_enabled: true,
+            save_wakeword_samples: false,
+            save_asr_audio: true,
+            pinyin_assist: true,
+        };
+        let s = serde_json::to_string(&cfg).unwrap();
+        let back: GeneralConfig = serde_json::from_str(&s).unwrap();
+        assert!(back.pinyin_assist);
     }
 }

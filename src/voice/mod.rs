@@ -21,5 +21,8 @@ pub use wakeword::{WakewordDetector, train_wakeword};
 pub use vad::{CommandRecorder, RecordState};
 pub use audio_util::{trim_silence, rms};
 pub use baidu_asr::BaiduAsr;
-pub use intent::{match_script, parse_intent, VoiceIntent};
+pub use intent::{
+    match_script, match_script_ex, parse_intent, MatchResult, MatchSource, RoundBest, ScriptMatch,
+    VoiceIntent,
+};
 pub use runtime::{VoiceConfig, VoiceEvent, VoiceRuntime};

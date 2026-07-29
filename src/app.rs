@@ -10,8 +10,8 @@ use crate::tray::{Tray, TrayCommand};
 use crate::utils::win32;
 use crate::vlog;
 use crate::voice::{
-    match_script, parse_intent, vlog, AudioCapture, VoiceConfig, VoiceEvent, VoiceIntent, VoiceRuntime,
-    train_wakeword, trim_silence, TARGET_SAMPLE_RATE,
+    match_script_ex, parse_intent, vlog, AudioCapture, MatchSource, VoiceConfig, VoiceEvent,
+    VoiceIntent, VoiceRuntime, train_wakeword, trim_silence, TARGET_SAMPLE_RATE,
 };
 use crate::window_slot::{Scheme, WindowSlot};
 use eframe::egui;
@@ -108,6 +108,7 @@ pub struct App {
     log_enabled: bool,
     save_wakeword_samples: bool,
     save_asr_audio: bool,
+    pinyin_assist: bool,
 
     // 统一配置窗口
     show_settings: bool,
@@ -243,6 +244,7 @@ impl App {
             log_enabled: config.general.log_enabled,
             save_wakeword_samples: config.general.save_wakeword_samples,
             save_asr_audio: config.general.save_asr_audio,
+            pinyin_assist: config.general.pinyin_assist,
             show_settings: false,
             settings_tab: SettingsTab::General,
             show_voice_help: false,
@@ -285,6 +287,7 @@ impl App {
         cfg.general.log_enabled = self.log_enabled;
         cfg.general.save_wakeword_samples = self.save_wakeword_samples;
         cfg.general.save_asr_audio = self.save_asr_audio;
+        cfg.general.pinyin_assist = self.pinyin_assist;
 
         // 同步日志开关到 vlog 模块
         vlog::set_enabled(self.log_enabled);
@@ -615,13 +618,21 @@ impl App {
             .map(|s| s.script_name.clone())
             .collect();
         vlog!("[intent] 窗口 {}({}) 已添加脚本: {:?}", idx + 1, win_name, names);
-        let matched = match_script(action, names.iter().map(|s| s.as_str()));
-        match matched {
-            Some(scheme_idx) => {
+        let result = match_script_ex(action, names.iter().map(|s| s.as_str()), self.pinyin_assist);
+        match &result.winner {
+            Some(m) => {
+                let scheme_idx = m.index;
                 let script_name = self.slots[idx].schemes[scheme_idx].script_name.clone();
                 let audio_only_once = self.slots[idx].schemes[scheme_idx].settings.audio_only_once;
 
-                vlog!("[intent] 动作「{}」匹配到脚本「{}」，启动", action, script_name);
+                let source = match m.source {
+                    MatchSource::Char => "字符",
+                    MatchSource::Pinyin => "拼音",
+                };
+                vlog!(
+                    "[intent] 动作「{}」匹配到脚本「{}」（{}命中 得分 {:.2}；字符轮 {:?} 拼音轮 {:?}），启动",
+                    action, script_name, source, m.score, result.char_best, result.pinyin_best
+                );
                 self.slots[idx].set_marked(scheme_idx);
 
                 // 根据脚本设置选择执行模式
@@ -642,7 +653,10 @@ impl App {
                 }
             }
             None => {
-                vlog!("[intent] 动作「{}」在窗口 {} 的脚本中未找到匹配", action, idx + 1);
+                vlog!(
+                    "[intent] 动作「{}」在窗口 {} 的脚本中未找到匹配（字符轮 {:?} 拼音轮 {:?}）",
+                    action, idx + 1, result.char_best, result.pinyin_best
+                );
                 self.status = format!(
                     "🎤「{}」→ {} 未找到匹配「{}」的脚本",
                     raw, win_name, action
@@ -1397,6 +1411,15 @@ impl App {
                 }
             }
         });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("指令匹配").strong());
+        ui.add_space(4.0);
+
+        ui.checkbox(&mut self.pinyin_assist, "拼音辅助匹配");
+        ui.add_space(2.0);
+        ui.label("开启后，字符匹配之外再做一轮拼音匹配（忽略声调、多音字全读音），取更优结果");
+        ui.label("可救回同音误识别（如“加血”被听成“加雪”）；打平时以字符匹配为准");
 
         if !self.last_voice_text.is_empty() {
             ui.add_space(4.0);

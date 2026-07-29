@@ -44,5 +44,8 @@ ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
 nnnoiseless = { version = "0.5", default-features = false }
 
+# 拼音（语音指令辅助匹配，纯 Rust 内嵌词典；0.11 起含多音字 ToPinyinMulti）
+pinyin = { version = "0.11", default-features = false, features = ["plain", "heteronym"] }
+
 [build-dependencies]
 winres = "0.1"
