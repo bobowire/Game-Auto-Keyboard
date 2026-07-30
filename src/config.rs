@@ -30,6 +30,9 @@ pub struct SlotConfig {
     /// 标识方案在 scheme_names 中的索引
     #[serde(default)]
     pub marked: Option<usize>,
+    /// 是否标记为主窗口（鼠标事件转发目标，全局互斥，至多一个）
+    #[serde(default)]
+    pub is_main: bool,
 }
 
 /// 百度语音识别 API 配置
@@ -179,6 +182,17 @@ impl AppConfig {
                 slot.marked = Some(0);
             }
         }
+        // 主窗口标记全局互斥：只保留第一个
+        let mut seen_main = false;
+        for slot in &mut self.slots {
+            if slot.is_main {
+                if seen_main {
+                    slot.is_main = false;
+                } else {
+                    seen_main = true;
+                }
+            }
+        }
     }
 
     /// 便捷：返回配置文件路径
@@ -210,5 +224,23 @@ mod tests {
         let s = serde_json::to_string(&cfg).unwrap();
         let back: GeneralConfig = serde_json::from_str(&s).unwrap();
         assert!(back.pinyin_assist);
+    }
+
+    #[test]
+    fn slot_config_is_main_default_false() {
+        // 旧配置（无 is_main 字段）应反序列化为 false（#[serde(default)]）
+        let sc = serde_json::from_str::<SlotConfig>(r#"{"name":"主号"}"#).unwrap();
+        assert!(!sc.is_main);
+    }
+
+    #[test]
+    fn normalize_keeps_only_first_is_main() {
+        let mut cfg = AppConfig::default();
+        cfg.slots[1].is_main = true;
+        cfg.slots[5].is_main = true;
+        cfg.normalize();
+        assert!(!cfg.slots[0].is_main);
+        assert!(cfg.slots[1].is_main);
+        assert!(!cfg.slots[5].is_main);
     }
 }

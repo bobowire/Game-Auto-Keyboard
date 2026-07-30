@@ -27,6 +27,8 @@ pub struct WindowSlot {
     pub schemes: Vec<Scheme>,
     /// 标识方案的索引（默认执行方案），指向 schemes
     pub marked: Option<usize>,
+    /// 是否标记为主窗口（鼠标事件转发目标，全局互斥）
+    pub is_main: bool,
     /// 当前后台运行器
     pub runner: Option<Runner>,
 }
@@ -39,6 +41,7 @@ impl Default for WindowSlot {
             title: String::new(),
             schemes: Vec::new(),
             marked: None,
+            is_main: false,
             runner: None,
         }
     }

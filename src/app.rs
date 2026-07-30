@@ -200,6 +200,7 @@ impl App {
                     _ if !slot.schemes.is_empty() => Some(0),
                     _ => None,
                 };
+                slot.is_main = sc.is_main;
             }
             slots.push(slot);
         }
@@ -290,6 +291,7 @@ impl App {
             cfg.slots[i].scheme_names =
                 slot.schemes.iter().map(|s| s.script_name.clone()).collect();
             cfg.slots[i].marked = slot.marked;
+            cfg.slots[i].is_main = slot.is_main;
         }
         cfg.baidu.api_key = self.baidu_api_key.clone();
         cfg.baidu.secret_key = self.baidu_secret_key.clone();
@@ -2051,9 +2053,29 @@ impl App {
         });
 
         let mut name_changed = false;
+        let mut main_toggled: Option<bool> = None;
         frame.show(ui, |ui| {
             // 标题行
             ui.horizontal(|ui| {
+                // 主窗口旗标（鼠标转发目标，全局互斥）
+                let is_main = self.slots[idx].is_main;
+                if ui
+                    .small_button(
+                        egui::RichText::new("⚑").color(if is_main {
+                            egui::Color32::GOLD
+                        } else {
+                            egui::Color32::DARK_GRAY
+                        }),
+                    )
+                    .on_hover_text(if is_main {
+                        "取消主窗口标记"
+                    } else {
+                        "设为主窗口（鼠标转发目标）"
+                    })
+                    .clicked()
+                {
+                    main_toggled = Some(!is_main);
+                }
                 ui.strong(format!("{}.", idx + 1));
                 // 可编辑的窗口名（语音指称用）
                 let resp = ui.add(
@@ -2183,6 +2205,17 @@ impl App {
         if name_changed {
             if self.slots[idx].name.trim().is_empty() {
                 self.slots[idx].name = format!("窗口{}", idx + 1);
+            }
+            self.save_config();
+        }
+
+        // 主窗口标记切换（互斥：先清全部再按需设置）
+        if let Some(make_main) = main_toggled {
+            for s in &mut self.slots {
+                s.is_main = false;
+            }
+            if make_main {
+                self.slots[idx].is_main = true;
             }
             self.save_config();
         }
