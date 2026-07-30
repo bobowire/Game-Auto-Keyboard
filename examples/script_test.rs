@@ -14,7 +14,7 @@ fn main() {
     let script_path = Path::new("scripts/hello.ag");
     println!("加载脚本: {:?}", script_path);
 
-    let sf = match ScriptFile::load(script_path) {
+    let sf = match ScriptFile::load(script_path, Path::new("scripts")) {
         Ok(sf) => sf,
         Err(e) => {
             eprintln!("加载失败: {}", e);
