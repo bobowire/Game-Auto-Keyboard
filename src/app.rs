@@ -151,6 +151,16 @@ enum SettingsTab {
     About,
 }
 
+/// 单窗口语音动作匹配+执行的结局（供汇总状态/响铃）
+enum ActionOutcome {
+    /// 窗口未绑定句柄
+    NotBound,
+    /// 该窗口脚本列表里没有匹配的脚本
+    NoMatch,
+    /// 匹配并尝试启动了脚本（success 标记 start_slot/run_slot_once 是否成功）
+    Ran { script: String, success: bool },
+}
+
 impl App {
     pub fn new() -> Self {
         // 获取可执行文件所在目录下的脚本目录
@@ -595,6 +605,10 @@ impl App {
                 vlog!("[intent] 匹配: 窗口 {} 执行动作「{}」", window + 1, action);
                 self.run_voice_action(window, &action, text);
             }
+            Some(VoiceIntent::RunActionAll { action }) => {
+                vlog!("[intent] 匹配: 所有窗口执行动作「{}」", action);
+                self.run_voice_action_all(&action, text);
+            }
             None => {
                 vlog!("[intent] 未匹配到任何窗口名或停止指令");
                 self.status = format!("🎤「{}」→ 未匹配到指令", text);
@@ -603,14 +617,14 @@ impl App {
         }
     }
 
-    /// 在指定窗口按动作关键词匹配脚本并执行
-    fn run_voice_action(&mut self, idx: usize, action: &str, raw: &str) {
+    /// 在单个窗口按动作关键词匹配脚本并执行（核心：不含状态/响铃副作用）。
+    ///
+    /// 返回 `ActionOutcome` 供单窗口与全部窗口两个外壳各自汇总展示。
+    fn try_voice_action(&mut self, idx: usize, action: &str) -> ActionOutcome {
         let win_name = self.slots[idx].name.clone();
         if !self.slots[idx].is_bound() {
-            vlog!("[intent] 窗口 {}({}) 未绑定窗口句柄，无法执行", idx + 1, win_name);
-            self.status = format!("🎤「{}」→ {} 未绑定窗口", raw, win_name);
-            play_sound("beep_fail.wav");
-            return;
+            vlog!("[intent] 窗口 {}({}) 未绑定窗口句柄，跳过", idx + 1, win_name);
+            return ActionOutcome::NotBound;
         }
         // 在该窗口已添加的方案里按动作关键词匹配脚本
         let names: Vec<String> = self.slots[idx]
@@ -618,7 +632,12 @@ impl App {
             .iter()
             .map(|s| s.script_name.clone())
             .collect();
-        vlog!("[intent] 窗口 {}({}) 已添加脚本: {:?}", idx + 1, win_name, names);
+        vlog!(
+            "[intent] 窗口 {}({}) 已添加脚本: {:?}",
+            idx + 1,
+            win_name,
+            names
+        );
         let result = match_script_ex(action, names.iter().map(|s| s.as_str()), self.pinyin_assist);
         match &result.winner {
             Some(m) => {
@@ -646,24 +665,88 @@ impl App {
 
                 if success {
                     vlog!("[intent] 已启动窗口 {} 的脚本「{}」", idx + 1, script_name);
-                    self.status = format!("🎤「{}」→ {} 执行 {}", raw, win_name, script_name);
-                    play_sound("beep_success.wav");
                 } else {
-                    vlog!("[intent] start_slot/run_slot_once 返回 false（窗口失效/无标识方案），未执行");
-                    play_sound("beep_fail.wav");
+                    vlog!(
+                        "[intent] start_slot/run_slot_once 返回 false（窗口失效/无标识方案），未执行"
+                    );
+                }
+                ActionOutcome::Ran {
+                    script: script_name,
+                    success,
                 }
             }
             None => {
                 vlog!(
                     "[intent] 动作「{}」在窗口 {} 的脚本中未找到匹配（字符轮 {:?} 拼音轮 {:?}）",
-                    action, idx + 1, result.char_best, result.pinyin_best
+                    action,
+                    idx + 1,
+                    result.char_best,
+                    result.pinyin_best
                 );
+                ActionOutcome::NoMatch
+            }
+        }
+    }
+
+    /// 在指定窗口按动作关键词匹配脚本并执行（带状态提示与响铃）
+    fn run_voice_action(&mut self, idx: usize, action: &str, raw: &str) {
+        let win_name = self.slots[idx].name.clone();
+        match self.try_voice_action(idx, action) {
+            ActionOutcome::NotBound => {
+                self.status = format!("🎤「{}」→ {} 未绑定窗口", raw, win_name);
+                play_sound("beep_fail.wav");
+            }
+            ActionOutcome::NoMatch => {
                 self.status = format!(
                     "🎤「{}」→ {} 未找到匹配「{}」的脚本",
                     raw, win_name, action
                 );
                 play_sound("beep_fail.wav");
             }
+            ActionOutcome::Ran { script, success } => {
+                if success {
+                    self.status = format!("🎤「{}」→ {} 执行 {}", raw, win_name, script);
+                    play_sound("beep_success.wav");
+                } else {
+                    play_sound("beep_fail.wav");
+                }
+            }
+        }
+    }
+
+    /// 在所有已绑定窗口各自按动作关键词匹配脚本并执行。
+    ///
+    /// 每个窗口用各自的脚本列表独立匹配（未必命中同一脚本名），
+    /// 命中即启动；最后统一汇总状态、响一次铃。
+    fn run_voice_action_all(&mut self, action: &str, raw: &str) {
+        let mut ran = 0usize;
+        let mut failed = 0usize;
+        let mut skipped = 0usize;
+        for idx in 0..SLOT_COUNT {
+            match self.try_voice_action(idx, action) {
+                ActionOutcome::NotBound => skipped += 1,
+                ActionOutcome::NoMatch => failed += 1,
+                ActionOutcome::Ran { success, .. } => {
+                    if success {
+                        ran += 1;
+                    } else {
+                        failed += 1;
+                    }
+                }
+            }
+        }
+        if ran > 0 {
+            self.status = format!(
+                "🎤「{}」→ 全部窗口执行「{}」：{} 个启动，{} 个未命中",
+                raw, action, ran, failed
+            );
+            play_sound("beep_success.wav");
+        } else {
+            self.status = format!(
+                "🎤「{}」→ 没有窗口可执行「{}」（未命中 {}，未绑定 {}）",
+                raw, action, failed, skipped
+            );
+            play_sound("beep_fail.wav");
         }
     }
 

@@ -8,6 +8,7 @@
 //   "窗口1快加血"        → 在"窗口1"执行动作"快加血"
 //   "所有人停止" / "所有窗口停止执行"  → 停止全部
 //   "窗口1停止" / "窗口1停止执行"       → 停止指定窗口
+//   "全部窗口跟随我" / "所有人加血"     → 所有窗口各自动作匹配（RunActionAll）
 //
 // 脚本匹配支持"拼音辅助"（match_script_ex）：ASR 常把自定义脚本名听成同音错字
 // （如"加血"→"加雪"），字符匹配对此零容忍。开启后在字符轮之外再做一轮以单字音节
@@ -25,6 +26,9 @@ pub enum VoiceIntent {
     /// 在指定窗口执行动作。action 为窗口名之后的剩余文本，
     /// 由上层与该窗口已添加的脚本名做包含匹配。
     RunAction { window: usize, action: String },
+    /// 在所有窗口执行动作。剥掉"全部/所有"前缀后的剩余文本为动作，
+    /// 由上层对每个窗口各自的脚本列表分别做包含匹配。
+    RunActionAll { action: String },
 }
 
 /// 唤醒词（回溯补齐后识别文本常含此前缀）
@@ -76,6 +80,39 @@ fn is_stop_all(s: &str) -> bool {
     has_stop(s) && ALL_WORDS.iter().any(|w| s.contains(w))
 }
 
+/// 从"全部/所有…"类指令中剥出动作文本。
+///
+/// 命中最长的 ALL_WORD（"所有人"优先于"所有"）后，再剥掉残留的指称
+/// 填充词前缀（"所有窗口"→"窗口"、"全部人"→"人"等），剩余即动作。
+/// 例如 "全部窗口跟随我" → "跟随我"、"所有人加血" → "加血"。
+fn extract_all_action(norm: &str) -> Option<String> {
+    // 选命中最长的 ALL_WORD
+    let mut matched: Option<&str> = None;
+    for &w in ALL_WORDS {
+        if norm.contains(w)
+            && matched.map_or(true, |m| w.chars().count() > m.chars().count())
+        {
+            matched = Some(w);
+        }
+    }
+    let matched = matched?;
+    let mut rest = norm.replacen(matched, "", 1).to_string();
+    // 剥掉残留指称填充词前缀（仅前缀，动作中后段出现的"人"等不动）
+    let fillers = ["窗口", "人", "们", "的"];
+    loop {
+        match fillers.iter().find(|f| rest.starts_with(**f)) {
+            Some(f) => rest = rest[f.len()..].to_string(),
+            None => break,
+        }
+    }
+    let action = rest.trim().to_string();
+    if action.is_empty() {
+        None
+    } else {
+        Some(action)
+    }
+}
+
 /// 解析文本为意图。
 ///
 /// `windows` 为 (槽位索引, 自定义窗口名) 列表；只有名字非空的槽位应传入。
@@ -89,6 +126,15 @@ pub fn parse_intent(text: &str, windows: &[(usize, String)]) -> Option<VoiceInte
     // 先判停止全部（"所有窗口"可能与某个窗口名部分重叠，需优先）
     if is_stop_all(&norm) {
         return Some(VoiceIntent::StopAll);
+    }
+
+    // "全部/所有…" + 动作（不含停止词）→ 所有窗口各自动作匹配。
+    // 须在窗口名循环之前判：否则"所有窗口"里的"窗口"可能与默认窗口名
+    // "窗口N"产生前缀歧义，或干脆匹配不到导致指令落空。
+    if ALL_WORDS.iter().any(|w| norm.contains(w)) {
+        if let Some(action) = extract_all_action(&norm) {
+            return Some(VoiceIntent::RunActionAll { action });
+        }
     }
 
     // 按窗口名长度降序，长名优先匹配
@@ -471,6 +517,44 @@ mod tests {
             parse_intent("所有窗口停止执行", &wins()),
             Some(VoiceIntent::StopAll)
         );
+    }
+
+    #[test]
+    fn run_action_all_variants() {
+        // "全部/所有…" + 动作 → 所有窗口各自动作匹配
+        assert_eq!(
+            parse_intent("全部窗口跟随我", &wins()),
+            Some(VoiceIntent::RunActionAll {
+                action: "跟随我".to_string()
+            })
+        );
+        assert_eq!(
+            parse_intent("所有人加血", &wins()),
+            Some(VoiceIntent::RunActionAll {
+                action: "加血".to_string()
+            })
+        );
+        assert_eq!(
+            parse_intent("全部加血", &wins()),
+            Some(VoiceIntent::RunActionAll {
+                action: "加血".to_string()
+            })
+        );
+        assert_eq!(
+            parse_intent("所有窗口跟随", &wins()),
+            Some(VoiceIntent::RunActionAll {
+                action: "跟随".to_string()
+            })
+        );
+        // 唤醒词前缀
+        assert_eq!(
+            parse_intent("小助手全部窗口跟随", &wins()),
+            Some(VoiceIntent::RunActionAll {
+                action: "跟随".to_string()
+            })
+        );
+        // 只有"全部"无动作 → 仍无法执行（落空到 None）
+        assert_eq!(parse_intent("全部窗口", &wins()), None);
     }
 
     #[test]
