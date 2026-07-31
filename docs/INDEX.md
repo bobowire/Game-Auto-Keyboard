@@ -24,6 +24,7 @@
 | [07-UI设计](./07-ui-design.md) | egui 界面布局 | 窗口列表和脚本浏览 |
 | [08-配置管理](./08-configuration.md) | 配置文件格式 | 持久化和热重载 |
 | [11-语音控制系统](./11-voice-control-system.md) | ASR + AI 意图理解 | 百度语音/Whisper 双模式 |
+| [12-鼠标转发覆盖窗](./12-mouse-forwarding.md) | 主窗口后台鼠标操作 | 焦点模型 / 零钩子转发 |
 
 ### 📖 参考资料
 
