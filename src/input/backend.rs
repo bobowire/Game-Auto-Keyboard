@@ -34,8 +34,8 @@ pub trait InputBackend: Send + Sync {
         y: i32,
     ) -> Result<(), String>;
 
-    /// 发送鼠标弹起事件
-    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton, x: i32, y: i32) -> Result<(), String>;
+    /// 发送鼠标弹起事件（弹起不需要坐标）
+    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton) -> Result<(), String>;
 
     // ===== 窗口消息 =====
 

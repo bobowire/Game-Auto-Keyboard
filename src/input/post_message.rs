@@ -140,19 +140,18 @@ impl InputBackend for PostMessageBackend {
         Ok(())
     }
 
-    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton, x: i32, y: i32) -> Result<(), String> {
+    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton) -> Result<(), String> {
         let msg = match button {
             MouseButton::Left => WM_LBUTTONUP,
             MouseButton::Right => WM_RBUTTONUP,
             MouseButton::Middle => WM_MBUTTONUP,
         };
 
-        let lparam = LPARAM(((y as isize) << 16) | (x as isize & 0xFFFF));
-        // 弹起时清掉本次释放的按键位
+        // 弹起不传坐标（lParam=0）；wParam 清掉本次释放的按键位
         let wparam = current_mk_state() & !button_mk(button);
 
         unsafe {
-            PostMessageW(hwnd, msg, WPARAM(wparam), lparam)
+            PostMessageW(hwnd, msg, WPARAM(wparam), LPARAM(0))
                 .map_err(|e| format!("发送鼠标消息失败: {:?}", e))?;
         }
 

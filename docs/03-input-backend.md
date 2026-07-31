@@ -75,30 +75,13 @@ pub trait InputBackend: Send + Sync {
         y: i32,
     ) -> Result<(), String>;
 
-    /// 发送鼠标弹起事件（注意：弹起也带 x/y 坐标）
-    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton, x: i32, y: i32) -> Result<(), String>;
+    /// 发送鼠标弹起事件（弹起不需要坐标）
+    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton) -> Result<(), String>;
 
     // ===== 窗口消息 =====
 
     /// 发送窗口激活消息（欺骗窗口使其认为自己被激活）
     fn send_window_active(&self, hwnd: HWND) -> Result<(), String>;
-
-    // ===== 组合便捷方法 =====
-
-    /// 点击（按下+弹起）。button_or_key 既可能是鼠标按钮名也可能是键盘按键名。
-    /// x/y 仅在鼠标点击时有意义。
-    fn click(&self, hwnd: HWND, button_or_key: &str, x: i32, y: i32) -> Result<(), String> {
-        use crate::input::keymap::parse_mouse_button;
-
-        if let Some(btn) = parse_mouse_button(button_or_key) {
-            self.send_mouse_down(hwnd, btn, x, y)?;
-            self.send_mouse_up(hwnd, btn, x, y)?;
-        } else {
-            self.send_key_down(hwnd, button_or_key)?;
-            self.send_key_up(hwnd, button_or_key)?;
-        }
-        Ok(())
-    }
 }
 ```
 
@@ -112,9 +95,8 @@ pub trait InputBackend: Send + Sync {
 | `send_key_up()` | 发送按键弹起事件 | `Result<(), String>` |
 | `send_mouse_move()` | 发送鼠标移动（客户区坐标） | `Result<(), String>` |
 | `send_mouse_down()` | 发送鼠标按下事件（客户区坐标） | `Result<(), String>` |
-| `send_mouse_up()` | 发送鼠标弹起事件（同样带 x/y 坐标） | `Result<(), String>` |
+| `send_mouse_up()` | 发送鼠标弹起事件（不带坐标） | `Result<(), String>` |
 | `send_window_active()` | 发送窗口激活消息（`WM_ACTIVATE` + `WM_SETFOCUS`） | `Result<(), String>` |
-| `click()` | **默认实现**：自动区分鼠标/键盘后做按下+弹起 | `Result<(), String>` |
 
 ### 关键约束
 
@@ -160,9 +142,7 @@ trait 把"按键名 → VK"的解析放在后端内部，统一走 keymap 模块
 - `parse_key("left")` → `VK_LEFT`（方向键）
 - `parse_mouse_button("left")` → `MouseButton::Left`（鼠标左键）
 
-实际调用链靠 **`click()` 默认实现的解析顺序**消歧：它先 `parse_mouse_button`，命中就走鼠标路径；不命中才退回 `send_key_down/up`（此时 `"left"` 才被解释成方向键）。
-
-⚠️ 但要注意：`ScriptExecutor` 当前**并未调用** trait 的 `click()` 默认实现（详见下文“调用链”），键盘 `click("left")` 在执行器里走的是 `send_key_down + send_key_up`，会被 `parse_key` 解释成**方向键**而非鼠标。鼠标点击则由 AST 层的 `Command::MouseClick(MouseButton, Coord)` 显式带枚举进入，不经过字符串歧义路径。
+消歧发生在 **AST 解析层**而非后端：脚本的 `mouse_click(left)` 在解析时就被 `parse_mouse_button` 认成 `Command::MouseClick(MouseButton::Left, Coord)`，带着枚举进入执行器，不经过字符串歧义；而键盘 `click(left)` 解析为 `Command::Click("left")`，执行器走 `send_key_down/up`，被 `parse_key` 解释成**方向键**。两者命令类型不同，不会混淆。
 
 ---
 
@@ -175,7 +155,7 @@ trait 把"按键名 → VK"的解析放在后端内部，统一走 keymap 模块
 - ✅ **已验证可用**（用户确认）
 - ✅ 无需激活窗口
 - ⚠️ 兼容性：对普通程序/老游戏有效，现代 3D 游戏可能需要其他方案
-- ⚠️ 鼠标消息 `wParam` 恒为 0（见下方“已知限制”）
+- ✅ 鼠标消息 `wParam` 合成 `MK_*` 按键状态位（按下/弹起/移动）
 
 ### 键盘实现
 
@@ -266,11 +246,15 @@ fn send_window_active(&self, hwnd: HWND) -> Result<(), String> {
 }
 ```
 
-### 已知限制 / 待办
+### 鼠标消息的 wParam（MK_* 状态位）
 
-- **鼠标消息 `wParam` 恒为 0**：按 Win32 规范，`WM_LBUTTONDOWN` 等消息的 `wParam` 应为按键状态标志（`MK_LBUTTON` / `MK_SHIFT` 等，表示同时按下的修饰键）。当前实现**没有构造这些标志位，全部传 `WPARAM(0)`**。
-  - 影响：依赖 `wParam` 判断“拖拽时是否带 Shift/Ctrl”的目标程序会拿不到修饰键状态。
-  - 当前未发现实际故障，作为已知坑记录，后续视需求补充 `MK_*` 标志位合成。
+按 Win32 规范，`WM_LBUTTONDOWN` 等鼠标消息的 `wParam` 应为按键状态标志（`MK_LBUTTON` / `MK_SHIFT` 等）。后端用 `GetKeyState` 读取当前物理按键/修饰键状态合成 `MK_*` 位，并对正在模拟的按键额外强制置位/清位：
+
+- `send_mouse_down`：`current_mk_state() | button_mk(button)`（强制置上本次按下位）
+- `send_mouse_up`：`current_mk_state() & !button_mk(button)`（清掉本次释放位）
+- `send_mouse_move`：`current_mk_state()`
+
+> 注意：`GetKeyState` 反映调用线程消息队列的状态；后台 Runner 线程通常无消息循环，物理按键位多返回 0，因此主要靠强制置位保证按下语义。`MK_*` 用字面量常量，未引入 `Win32_System_SystemServices` feature。
 
 ---
 
@@ -286,8 +270,7 @@ fn execute_command(&self, cmd: &Command) -> Result<(), String> {
         Command::Down(key)       => self.input.send_key_down(self.hwnd, key)?,
         Command::Up(key)         => self.input.send_key_up(self.hwnd, key)?,
         Command::Click(key)      => {
-            // 注意：执行器并未调用 trait 的 click() 默认实现，
-            // 而是直接走键盘 down/up（所以 "left" 在此会被解释为方向键）
+            // 键盘点击：直接 down/up（"left" 在此会被 parse_key 解释为方向键）
             self.input.send_key_down(self.hwnd, key)?;
             self.input.send_key_up(self.hwnd, key)?;
         }
@@ -303,16 +286,15 @@ fn execute_command(&self, cmd: &Command) -> Result<(), String> {
         }
         Command::MouseDown(btn, coord) => {
             let (x, y) = self.resolve_coord(coord)?;
-            self.input.send_mouse_down(self.hwnd, to_input_btn(*btn), x, y)?;
+            self.input.send_mouse_down(self.hwnd, *btn, x, y)?;
         }
         Command::MouseUp(btn) => {
-            // 注意：弹起事件没有坐标上下文，固定传 (0, 0)
-            self.input.send_mouse_up(self.hwnd, to_input_btn(*btn), 0, 0)?;
+            self.input.send_mouse_up(self.hwnd, *btn)?;
         }
         Command::MouseClick(btn, coord) => {
             let (x, y) = self.resolve_coord(coord)?;
-            self.input.send_mouse_down(self.hwnd, to_input_btn(*btn), x, y)?;
-            self.input.send_mouse_up(self.hwnd, to_input_btn(*btn), x, y)?;
+            self.input.send_mouse_down(self.hwnd, *btn, x, y)?;
+            self.input.send_mouse_up(self.hwnd, *btn)?;
         }
         Command::Setting(_) | Command::If { .. } => { /* 略 */ }
     }
@@ -330,24 +312,9 @@ fn execute_command(&self, cmd: &Command) -> Result<(), String> {
 | `Center { dx, dy }` | `(w/2 + dx, h/2 + dy)` |
 | `Percent { px, py }` | `(w * px / 100, h * py / 100)` |
 
-### 两个 `MouseButton` 枚举的桥接
+### `MouseButton` 枚举（已统一）
 
-代码里存在两个结构相同但独立的枚举：
-
-- `script::ast::MouseButton` —— AST/脚本层使用
-- `input::keymap::MouseButton` —— `InputBackend` 接口使用
-
-执行器用私有函数 `to_input_btn` 在两者间转换：
-
-```rust
-fn to_input_btn(b: script::ast::MouseButton) -> input::keymap::MouseButton {
-    match b {
-        MouseButton::Left => InputBtn::Left,
-        MouseButton::Right => InputBtn::Right,
-        MouseButton::Middle => InputBtn::Middle,
-    }
-}
-```
+`MouseButton` 只有一份定义：`input::keymap::MouseButton`（Left/Right/Middle）。`script::ast` 通过 `pub use` 重导出复用，AST 与后端直接共用同一类型，无需桥接转换（历史上有过重复定义与 `to_input_btn` 桥接函数，已移除）。
 
 ---
 
@@ -485,9 +452,8 @@ impl InputBackend for AhkBackend {
     fn send_key_up(&self, hwnd: HWND, key: &str) -> Result<(), String> { todo!() }
     fn send_mouse_move(&self, hwnd: HWND, x: i32, y: i32) -> Result<(), String> { todo!() }
     fn send_mouse_down(&self, hwnd: HWND, button: MouseButton, x: i32, y: i32) -> Result<(), String> { todo!() }
-    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton, x: i32, y: i32) -> Result<(), String> { todo!() }
+    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton) -> Result<(), String> { todo!() }
     fn send_window_active(&self, hwnd: HWND) -> Result<(), String> { todo!() }
-    // click() 已有默认实现，可不重写
 }
 ```
 
@@ -527,7 +493,7 @@ impl InputManager {
 - ⚠️ 需要先激活窗口（`SetForegroundWindow`）
 - 预期走 `SendInput` + `INPUT_KEYBOARD` / `INPUT_MOUSE`
 
-实现时需补齐 trait 全部方法（含 `send_mouse_move`、`send_window_active`、`click` 默认实现可不重写）。
+实现时需补齐 trait 全部方法（`send_key_down/up`、`send_mouse_move/down/up`、`send_window_active`）。
 
 ### 驱动级后端（接口构想）
 

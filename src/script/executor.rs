@@ -121,13 +121,13 @@ impl<'a> ScriptExecutor<'a> {
             }
             Command::MouseUp(btn) => {
                 println!("[执行] mouse_up({:?})", btn);
-                self.input.send_mouse_up(self.hwnd, *btn, 0, 0)?;
+                self.input.send_mouse_up(self.hwnd, *btn)?;
             }
             Command::MouseClick(btn, coord) => {
                 let (x, y) = self.resolve_coord(coord)?;
                 println!("[执行] mouse_click({:?}, {}, {})", btn, x, y);
                 self.input.send_mouse_down(self.hwnd, *btn, x, y)?;
-                self.input.send_mouse_up(self.hwnd, *btn, x, y)?;
+                self.input.send_mouse_up(self.hwnd, *btn)?;
             }
             Command::If { condition, then_block, else_if_blocks } => {
                 if self.eval_bool_expr(condition)? {
