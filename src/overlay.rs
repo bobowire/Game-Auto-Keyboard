@@ -38,12 +38,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
     GetWindowLongPtrW, IsIconic, IsWindow, IsWindowVisible, LoadCursorW, PeekMessageW,
     PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterClassExW,
-    HCURSOR, SetCursor, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos,
+    SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos,
     ShowWindow, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HWND_TOPMOST, IDC_ARROW,
     LWA_ALPHA, MSG, PM_NOREMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WM_ACTIVATE, WM_CLOSE,
     WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_PAINT, WM_QUIT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER,
+    WM_PAINT, WM_QUIT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_TIMER,
     WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_POPUP,
 };
@@ -57,8 +57,6 @@ const OVERLAY_CLASS: windows::core::PCWSTR = w!("GAK_MouseOverlay");
 const FOLLOW_TIMER_ID: usize = 1;
 /// 跟随间隔（毫秒）
 const FOLLOW_INTERVAL_MS: u32 = 50;
-/// 右键拖视角时，落在按下点（游戏 SetCursorPos 回拉目标）此范围内的移动视为回拉，不转发
-const RBUTTON_SKIP_TOLERANCE: i32 = 3;
 
 /// 覆盖窗回报给 UI 的事件
 #[derive(Debug, Clone)]
@@ -222,8 +220,6 @@ fn run_loop(
             events: events.clone(),
             last_rect: RECT::default(),
             shown: false,
-            rbutton_anchor: None,
-            arrow_cursor: cursor,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -267,10 +263,6 @@ struct WndState {
     events: EventSender,
     last_rect: RECT,
     shown: bool,
-    /// 右键拖视角期间的按下点（游戏 SetCursorPos 回拉目标）；非拖动期为 None
-    rbutton_anchor: Option<POINT>,
-    /// 默认箭头光标（拖动结束恢复用）
-    arrow_cursor: HCURSOR,
 }
 
 unsafe extern "system" fn overlay_wnd_proc(
@@ -304,30 +296,13 @@ unsafe extern "system" fn overlay_wnd_proc(
         // wParam/lParam 原样转发：OS 派发时 wParam 已带 MK_* 位；
         // WS_POPUP 无边框，客户区 == 窗口区，lParam 即目标客户区坐标
         WM_MOUSEMOVE => {
-            // 右键拖视角期间：落在按下点（游戏 SetCursorPos 回拉目标）附近的移动
-            // 是主窗口自己的回拉——主窗口需要它来重置基准（否则视角逻辑会乱），
-            // 但其它目标窗口没做回拉、收到会视角乱跳。故：只发给主窗口，不广播。
-            let recenter = matches!((&*ptr).rbutton_anchor, Some(a) if {
-                let p = point_from_lparam(lparam);
-                (p.x - a.x).abs() <= RBUTTON_SKIP_TOLERANCE
-                    && (p.y - a.y).abs() <= RBUTTON_SKIP_TOLERANCE
-            });
-            if recenter {
-                let _ = PostMessageW((&*ptr).target, msg, wparam, lparam);
-            } else {
-                forward(&*ptr, msg, wparam, lparam);
-            }
+            // 鼠标移动消息原样转发给所有目标窗口（不做任何过滤）
+            forward(&*ptr, msg, wparam, lparam);
             LRESULT(0)
         }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
             // 捕获鼠标：拖拽时光标移出覆盖窗边界也不断流
             let _ = SetCapture(hwnd);
-            if msg == WM_RBUTTONDOWN {
-                // 进入右键拖视角：记下按下点（游戏回拉目标），隐藏光标
-                let st = &mut *ptr;
-                st.rbutton_anchor = Some(point_from_lparam(lparam));
-                SetCursor(HCURSOR(std::ptr::null_mut()));
-            }
             forward(&*ptr, msg, wparam, lparam);
             // XBUTTON 消息要求返回 TRUE，其余返回 0
             LRESULT(if msg == WM_XBUTTONDOWN { 1 } else { 0 })
@@ -335,12 +310,6 @@ unsafe extern "system" fn overlay_wnd_proc(
         WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP => {
             if GetCapture() == hwnd {
                 let _ = ReleaseCapture();
-            }
-            if msg == WM_RBUTTONUP {
-                // 退出右键拖视角：恢复光标
-                let st = &mut *ptr;
-                st.rbutton_anchor = None;
-                SetCursor(st.arrow_cursor);
             }
             forward(&*ptr, msg, wparam, lparam);
             LRESULT(if msg == WM_XBUTTONUP { 1 } else { 0 })
@@ -357,29 +326,14 @@ unsafe extern "system" fn overlay_wnd_proc(
         }
         // 吞掉 WM_CLOSE：覆盖窗持有焦点时 Alt+F4 不应销毁它（只能由开关/主窗口关闭来停）
         WM_CLOSE => LRESULT(0),
-        // 拖视角期间持续隐藏光标（否则 DefWindowProc 会用类光标恢复箭头）
-        WM_SETCURSOR => {
-            if (&*ptr).rbutton_anchor.is_some() {
-                SetCursor(HCURSOR(std::ptr::null_mut()));
-                LRESULT(1) // 已处理，抑制默认
-            } else {
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-        }
         // 覆盖窗被激活（用户点击）→ 给所有目标窗口补发激活消息：很多游戏只在
         // 内部"激活态"为真时才接受输入，复用脚本执行器的同款方法
         WM_ACTIVATE => {
-            // wParam 低字：0 = WA_INACTIVE（失活），非 0 = 激活（WA_ACTIVE/WA_CLICKACTIVE）
+            // wParam 低字：非 0 = 激活（WA_ACTIVE/WA_CLICKACTIVE）→ 给所有目标补发激活消息
             if wparam.0 & 0xFFFF != 0 {
                 let backend = PostMessageBackend::new();
                 for &t in &(&*ptr).targets {
                     let _ = backend.send_window_active(t);
-                }
-            } else {
-                // 失活时清理右键拖动状态，避免光标卡在隐藏
-                let st = &mut *ptr;
-                if st.rbutton_anchor.take().is_some() {
-                    SetCursor(st.arrow_cursor);
                 }
             }
             LRESULT(0)
@@ -465,14 +419,6 @@ unsafe fn follow_tick(hwnd: HWND, st: &mut WndState) {
 unsafe fn forward(st: &WndState, msg: u32, wparam: WPARAM, lparam: LPARAM) {
     for &t in &st.targets {
         let _ = PostMessageW(t, msg, wparam, lparam);
-    }
-}
-
-/// 从 LPARAM 取客户区坐标（GET_X/Y_LPARAM 语义，有符号）
-fn point_from_lparam(lparam: LPARAM) -> POINT {
-    POINT {
-        x: ((lparam.0 as u32) & 0xFFFF) as i16 as i32,
-        y: (((lparam.0 as u32) >> 16) & 0xFFFF) as i16 as i32,
     }
 }
 
