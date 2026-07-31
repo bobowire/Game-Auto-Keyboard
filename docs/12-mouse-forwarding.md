@@ -92,6 +92,7 @@ Windows 对鼠标消息有两套投递规则：
 | `WM_MOUSEWHEEL/HWHEEL` | 同名消息原样 | 焦点在覆盖窗时由 OS 直接送达；wParam 的 delta+MK 位、lParam 屏幕坐标都由 OS 组好 |
 | `WM_CLOSE` | **吞掉** | 覆盖窗持焦时 Alt+F4 不应销毁它（只能由开关/主窗口关闭来停） |
 | `WM_KEYDOWN`（VK_ESCAPE） | 不转发，本地消费 | 500ms 内按两次 ESC → 回报 `CloseRequested`，UI 侧关闭转发；lParam bit30 排除长按重键 |
+| `WM_ACTIVATE`（激活） | 给主窗口补发 `WM_ACTIVATE(1)` + `WM_SETFOCUS` | 复用 `PostMessageBackend::send_window_active`（脚本 `send_window_active()` 同款）；很多游戏只在内部"激活态"为真时接受输入 |
 
 ### 键盘（预留）
 

@@ -40,14 +40,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterClassExW,
     SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, CS_DBLCLKS,
     CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, MSG, PM_NOREMOVE,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WM_ACTIVATE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN,
     WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_QUIT, WM_RBUTTONDBLCLK,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_TIMER, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP,
     WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::event_bus::{EventSender, MainEvent};
+use crate::input::{InputBackend, PostMessageBackend};
 
 /// 覆盖窗窗口类名（进程级，重复注册按成功处理）
 const OVERLAY_CLASS: windows::core::PCWSTR = w!("GAK_MouseOverlay");
@@ -318,6 +319,16 @@ unsafe extern "system" fn overlay_wnd_proc(
         }
         // 吞掉 WM_CLOSE：覆盖窗持有焦点时 Alt+F4 不应销毁它（只能由开关/主窗口关闭来停）
         WM_CLOSE => LRESULT(0),
+        // 覆盖窗被激活（用户点击）→ 给主窗口补发激活消息：很多游戏只在
+        // 内部"激活态"为真时才接受输入，复用脚本执行器的同款方法
+        WM_ACTIVATE => {
+            // wParam 低字：0 = WA_INACTIVE（失活），非 0 = 激活（WA_ACTIVE/WA_CLICKACTIVE）
+            if wparam.0 & 0xFFFF != 0 {
+                let backend = PostMessageBackend::new();
+                let _ = backend.send_window_active((&*ptr).target);
+            }
+            LRESULT(0)
+        }
         // 双击 ESC（500ms 内两次）请求关闭转发；bit30 排除长按自动重键
         WM_KEYDOWN if wparam.0 as u32 == VK_ESCAPE.0 as u32 => {
             let st = &mut *ptr;
