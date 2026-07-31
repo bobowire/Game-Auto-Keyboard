@@ -23,6 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_PAINT};
 
 // 重导出事件类型，方便使用
 pub use crate::hotkey::HotkeyKey;
+pub use crate::overlay::OverlayEvent;
 pub use crate::tray::TrayCommand;
 pub use crate::voice::VoiceEvent;
 
@@ -35,6 +36,8 @@ pub enum MainEvent {
     Hotkey(HotkeyKey),
     /// 语音事件：唤醒、识别结果等
     Voice(VoiceEvent),
+    /// 覆盖窗事件：目标窗口失效等
+    Overlay(OverlayEvent),
     // 未来可扩展：Timer / Network / ...
 }
 

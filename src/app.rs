@@ -4,6 +4,7 @@ use crate::color_picker::ColorPicker;
 use crate::config::AppConfig;
 use crate::event_bus::{MainEvent, MainEventBus, WakeTicker};
 use crate::hotkey::{HotkeyAction, HotkeyKey, HotkeyManager, HotkeyStateMachine};
+use crate::overlay::{OverlayEvent, OverlayWindow};
 use crate::runner::Runner;
 use crate::script::{load_dir, ScriptFile};
 use crate::tray::{Tray, TrayCommand};
@@ -94,6 +95,8 @@ pub struct App {
 
     // 语音控制运行时（None 表示未开启）
     voice: Option<VoiceRuntime>,
+    /// 鼠标转发覆盖窗句柄（None = 未开启）
+    overlay: Option<OverlayWindow>,
     // 百度语音配置（编辑用），从 config 加载
     baidu_api_key: String,
     baidu_secret_key: String,
@@ -248,6 +251,7 @@ impl App {
             quitting: false,
             wake_pending: 0,
             voice: None,
+            overlay: None,
             baidu_api_key: config.baidu.api_key.clone(),
             baidu_secret_key: config.baidu.secret_key.clone(),
             last_voice_text: String::new(),
@@ -446,6 +450,21 @@ impl App {
         if let Some(mut v) = self.voice.take() {
             v.stop();
             self.status = "语音控制已关闭".to_string();
+        }
+    }
+
+    /// 处理覆盖窗回报事件
+    fn handle_overlay_event(&mut self, ev: OverlayEvent) {
+        // 覆盖窗已被 UI 侧关闭时丢弃残留事件（同 handle_voice_event 的竞态保护）：
+        // stop_overlay() 会 join 线程，但线程退出前发出的 TargetLost 可能还留在总线里
+        if self.overlay.is_none() {
+            return;
+        }
+        match ev {
+            OverlayEvent::TargetLost => {
+                self.overlay = None;
+                self.status = "🖱 鼠标转发已停止：主窗口已关闭/失效".to_string();
+            }
         }
     }
 
@@ -862,6 +881,7 @@ impl App {
                 MainEvent::Tray(cmd) => self.handle_tray(ctx, cmd),
                 MainEvent::Hotkey(key) => self.handle_hotkey(key),
                 MainEvent::Voice(ev) => self.handle_voice_event(ev),
+                MainEvent::Overlay(ev) => self.handle_overlay_event(ev),
             }
         }
     }
