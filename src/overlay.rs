@@ -305,16 +305,16 @@ unsafe extern "system" fn overlay_wnd_proc(
         // WS_POPUP 无边框，客户区 == 窗口区，lParam 即目标客户区坐标
         WM_MOUSEMOVE => {
             // 右键拖视角期间：落在按下点（游戏 SetCursorPos 回拉目标）附近的移动
-            // 视为游戏的回拉而非用户操作，不转发，避免反馈环
-            let skip = match (&*ptr).rbutton_anchor {
-                Some(a) => {
-                    let p = point_from_lparam(lparam);
-                    (p.x - a.x).abs() <= RBUTTON_SKIP_TOLERANCE
-                        && (p.y - a.y).abs() <= RBUTTON_SKIP_TOLERANCE
-                }
-                None => false,
-            };
-            if !skip {
+            // 是主窗口自己的回拉——主窗口需要它来重置基准（否则视角逻辑会乱），
+            // 但其它目标窗口没做回拉、收到会视角乱跳。故：只发给主窗口，不广播。
+            let recenter = matches!((&*ptr).rbutton_anchor, Some(a) if {
+                let p = point_from_lparam(lparam);
+                (p.x - a.x).abs() <= RBUTTON_SKIP_TOLERANCE
+                    && (p.y - a.y).abs() <= RBUTTON_SKIP_TOLERANCE
+            });
+            if recenter {
+                let _ = PostMessageW((&*ptr).target, msg, wparam, lparam);
+            } else {
                 forward(&*ptr, msg, wparam, lparam);
             }
             LRESULT(0)
