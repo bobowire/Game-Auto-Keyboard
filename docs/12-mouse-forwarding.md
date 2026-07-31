@@ -94,6 +94,18 @@ Windows 对鼠标消息有两套投递规则：
 | `WM_KEYDOWN`（VK_Q） | 不转发，本地消费 | Ctrl+Q → 回报 `CloseRequested`，UI 侧关闭转发；Ctrl 状态用 `GetKeyState` 取，lParam bit30 排除长按重键 |
 | `WM_ACTIVATE`（激活） | 给**所有目标窗口**补发 `WM_ACTIVATE(1)` + `WM_SETFOCUS` | 复用 `PostMessageBackend::send_window_active`（脚本 `send_window_active()` 同款）；很多游戏只在内部"激活态"为真时接受输入 |
 
+### 右键拖视角的特殊处理（防反馈环）
+
+许多 3D 游戏的"按住右键拖动视角"实现是：每帧读光标位置算视角增量，再 `SetCursorPos` 把光标拉回按下点。这会与转发形成反馈环——游戏的回拉在覆盖窗上产生一条 WM_MOUSEMOVE，被我们再次转发，游戏读到巨大假增量导致视角乱跳。
+
+处理（仅在右键按住期间生效）：
+
+- `WM_RBUTTONDOWN` 记下按下点 P，并隐藏光标（`SetCursor(NULL)`，并在 `WM_SETCURSOR` 里持续压制，否则 `DefWindowProc` 会用类光标恢复箭头）
+- `WM_MOUSEMOVE` 落在 P 附近（`RBUTTON_SKIP_TOLERANCE` ±3px）→ 判定为游戏回拉，**不转发**；其余移动照常转发
+- `WM_RBUTTONUP` 恢复光标；覆盖窗失活时兜底清理（防止光标卡在隐藏）
+
+> 前提：游戏的回拉目标是右键按下点。若某游戏回拉到窗口中心，P 对不上、过滤失效，需改用"距上一帧位移超阈值即为回拉"的通用判据。
+
 ### 键盘（预留）
 
 覆盖窗持有焦点时键盘消息（`WM_KEYDOWN/UP`）同样送达本窗口。目前只消费了一个快捷键：**Ctrl+Q 关闭转发**（覆盖窗线程回报 `OverlayEvent::CloseRequested`，UI 侧执行 stop）。其余按键忽略；后续若需要全量键盘转发，可直接用项目已有的 PostMessage 发键机制（`send_key_down/up`，已验证）。
