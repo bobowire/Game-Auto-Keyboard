@@ -1,15 +1,16 @@
 // 鼠标事件转发覆盖窗
 //
-// 一个独立的 Win32 layered 窗口，精确覆盖目标（主）窗口的客户区：
+// 一个独立的 Win32 layered 窗口，精确覆盖主窗口（锚点）的客户区：
 // - 整体 50% 半透明 + 居中提示文字"鼠标事件转发模式"
-// - 50ms 定时器跟随目标窗口移动/缩放；最小化/隐藏时隐藏，恢复后自动回来
-// - 目标窗口失效时自毁，并经事件总线回报 OverlayEvent::TargetLost
+// - 50ms 定时器跟随主窗口移动/缩放；最小化/隐藏时隐藏，恢复后自动回来
+// - 鼠标消息广播给所有已绑定的目标窗口（多开同步操作）；主窗口失效时自毁
+//   并经事件总线回报 OverlayEvent::TargetLost
 //
 // 焦点模型（刻意不设 WS_EX_NOACTIVATE）：
 // - 转发模式下覆盖窗理应持有焦点——点击覆盖窗即获焦，焦点跟着用户的点击走
 // - 滚轮消息（WM_MOUSEWHEEL）按 Windows 规则只送给焦点窗口：覆盖窗获焦后
 //   滚轮直接进入本窗口消息循环，原样转发即可，无需安装任何全局钩子
-// - 键盘消息同理送达本窗口，现阶段忽略，后续可扩展为转发给主窗口
+// - 键盘消息同理送达本窗口，现阶段忽略，后续可扩展为转发给目标窗口
 //
 // 线程模型（照抄 hotkey/manager.rs 先例）：
 // - 覆盖窗活在独立线程的原生消息循环里（窗口必须在创建它的线程销毁）
@@ -75,14 +76,19 @@ pub struct OverlayWindow {
 impl OverlayWindow {
     /// 启动覆盖窗线程并同步等待窗口创建完成。
     ///
-    /// `target_raw`：目标窗口句柄（isize 形式，规避 HWND 非 Send）
+    /// `anchor_raw`：主窗口句柄（isize），覆盖窗跟随它定位/显隐
+    /// `targets_raw`：所有需接收鼠标消息的目标窗口句柄（isize，含主窗口）
     /// `events`：事件总线发送端（用于回报 TargetLost）
-    pub fn start(target_raw: isize, events: EventSender) -> Result<Self, String> {
+    pub fn start(
+        anchor_raw: isize,
+        targets_raw: Vec<isize>,
+        events: EventSender,
+    ) -> Result<Self, String> {
         let (ok_tx, ok_rx) = bounded::<Result<(), String>>(1);
         let (id_tx, id_rx) = bounded::<u32>(1);
         let handle = thread::Builder::new()
             .name("mouse-overlay".to_string())
-            .spawn(move || run_loop(target_raw, events, ok_tx, id_tx))
+            .spawn(move || run_loop(anchor_raw, targets_raw, events, ok_tx, id_tx))
             .map_err(|e| format!("启动覆盖窗线程失败: {}", e))?;
 
         // 线程保证在成功路径或失败路径都先报结果；id 在结果之前发送（两端都有缓冲）
@@ -124,7 +130,8 @@ impl Drop for OverlayWindow {
 
 /// 覆盖窗线程主体
 fn run_loop(
-    target_raw: isize,
+    anchor_raw: isize,
+    targets_raw: Vec<isize>,
     events: EventSender,
     ok_tx: crossbeam_channel::Sender<Result<(), String>>,
     id_tx: crossbeam_channel::Sender<u32>,
@@ -207,7 +214,8 @@ fn run_loop(
 
         // 4. 窗口状态存入 GWLP_USERDATA（此刻消息循环未跑，不会有派发竞争）
         let state = Box::new(WndState {
-            target: HWND(target_raw as *mut _),
+            target: HWND(anchor_raw as *mut _),
+            targets: targets_raw.iter().map(|&h| HWND(h as *mut _)).collect(),
             events: events.clone(),
             last_rect: RECT::default(),
             shown: false,
@@ -247,7 +255,10 @@ fn run_loop(
 
 /// 窗口过程内部状态（堆上，经 GWLP_USERDATA 存取，全程不出覆盖窗线程）
 struct WndState {
+    /// 主窗口（锚点）：覆盖窗跟随它定位/显隐、失效时自毁
     target: HWND,
+    /// 所有转发目标（含主窗口）：鼠标消息广播给这些窗口
+    targets: Vec<HWND>,
     events: EventSender,
     last_rect: RECT,
     shown: bool,
@@ -313,13 +324,15 @@ unsafe extern "system" fn overlay_wnd_proc(
         }
         // 吞掉 WM_CLOSE：覆盖窗持有焦点时 Alt+F4 不应销毁它（只能由开关/主窗口关闭来停）
         WM_CLOSE => LRESULT(0),
-        // 覆盖窗被激活（用户点击）→ 给主窗口补发激活消息：很多游戏只在
+        // 覆盖窗被激活（用户点击）→ 给所有目标窗口补发激活消息：很多游戏只在
         // 内部"激活态"为真时才接受输入，复用脚本执行器的同款方法
         WM_ACTIVATE => {
             // wParam 低字：0 = WA_INACTIVE（失活），非 0 = 激活（WA_ACTIVE/WA_CLICKACTIVE）
             if wparam.0 & 0xFFFF != 0 {
                 let backend = PostMessageBackend::new();
-                let _ = backend.send_window_active((&*ptr).target);
+                for &t in &(&*ptr).targets {
+                    let _ = backend.send_window_active(t);
+                }
             }
             LRESULT(0)
         }
@@ -400,9 +413,11 @@ unsafe fn follow_tick(hwnd: HWND, st: &mut WndState) {
     }
 }
 
-/// 鼠标消息转发：原样投给目标窗口
+/// 鼠标消息转发：原样广播给所有目标窗口
 unsafe fn forward(st: &WndState, msg: u32, wparam: WPARAM, lparam: LPARAM) {
-    let _ = PostMessageW(st.target, msg, wparam, lparam);
+    for &t in &st.targets {
+        let _ = PostMessageW(t, msg, wparam, lparam);
+    }
 }
 
 /// 绘制半透明底色 + 居中提示文字（整体经 LWA_ALPHA 呈 50% 透明）

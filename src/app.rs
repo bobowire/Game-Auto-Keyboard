@@ -486,18 +486,29 @@ impl App {
             self.status = "⚑ 请先标记主窗口（点槽位序号左侧的旗帜）".to_string();
             return;
         };
-        let Some(hwnd_raw) = self.slots[idx].hwnd else {
+        let Some(anchor_raw) = self.slots[idx].hwnd else {
             self.status = "⚠ 主窗口尚未绑定，请先抓取窗口".to_string();
             return;
         };
-        if !win32::is_valid(windows::Win32::Foundation::HWND(hwnd_raw as *mut _)) {
+        if !win32::is_valid(windows::Win32::Foundation::HWND(anchor_raw as *mut _)) {
             self.status = "⚠ 主窗口句柄已失效，请重新抓取窗口".to_string();
             return;
         }
-        match OverlayWindow::start(hwnd_raw, self.events.sender()) {
+        // 收集所有已绑定且有效的目标窗口（含主窗口），鼠标消息广播给它们
+        let targets: Vec<isize> = self
+            .slots
+            .iter()
+            .filter_map(|s| s.hwnd)
+            .filter(|&h| win32::is_valid(windows::Win32::Foundation::HWND(h as *mut _)))
+            .collect();
+        let n = targets.len();
+        match OverlayWindow::start(anchor_raw, targets, self.events.sender()) {
             Ok(o) => {
                 self.overlay = Some(o);
-                self.status = "🖱 鼠标转发已开启：点击覆盖窗获取焦点后，鼠标操作（含滚轮）转发给主窗口；Ctrl+Q 关闭".to_string();
+                self.status = format!(
+                    "🖱 鼠标转发已开启：广播给 {} 个绑定窗口（覆盖窗跟随主窗口）；Ctrl+Q 关闭",
+                    n
+                );
             }
             Err(e) => self.status = format!("🖱 鼠标转发启动失败: {}", e),
         }

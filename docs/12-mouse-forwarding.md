@@ -9,7 +9,7 @@
 1. 把某个槽位标记为**主窗口**（⚑ 旗标，全局互斥，持久化）
 2. 点工具行的 **🖱 转发** 开关
 3. 一个 50% 半透明、带"鼠标事件转发模式"提示文字的覆盖窗精确盖住主窗口客户区
-4. 用户在覆盖窗上的鼠标操作（点击/拖拽/双击/滚轮）经 `PostMessageW` 转发给主窗口
+4. 用户在覆盖窗上的鼠标操作（点击/拖拽/双击/滚轮）经 `PostMessageW` **广播给所有已绑定的窗口**（多开同步操作）
 
 ## 总体架构
 
@@ -48,7 +48,7 @@ App::handle_overlay_event → 复位开关、状态栏提示
 | 属性 | 值 | 理由 |
 |---|---|---|
 | 扩展样式 | `WS_EX_LAYERED \| WS_EX_TOPMOST \| WS_EX_TOOLWINDOW` | 半透明；始终置顶（主窗口被挡时仍可操作）；不进任务栏/Alt-Tab |
-| 样式 | `WS_POPUP` | 无边框 → 整个窗口即客户区，覆盖窗坐标与主窗口客户区坐标 1:1，转发无需换算 |
+| 样式 | `WS_POPUP` | 无边框 → 整个窗口即客户区，覆盖窗坐标即主窗口（锚点）客户区坐标；广播时原样投给所有目标，假设各目标客户区尺寸一致（同分辨率多开场景天然满足） |
 | 透明度 | `SetLayeredWindowAttributes(..., 128, LWA_ALPHA)` | 整体 50%（v1 简单方案） |
 | 窗口类 | `CS_DBLCLKS \| CS_HREDRAW \| CS_VREDRAW` | 双击消息必需；尺寸变化整体重绘 |
 | 绘制 | `WM_PAINT`：深蓝灰底 `RGB(30,60,80)` + 白色粗体微软雅黑居中文字 | 深底保证 50% 透明叠在亮色游戏画面上仍可读 |
@@ -82,7 +82,7 @@ Windows 对鼠标消息有两套投递规则：
 
 ### 消息映射表
 
-| 覆盖窗收到 | 转发给主窗口 | 备注 |
+| 覆盖窗收到 | 广播给所有目标窗口 | 备注 |
 |---|---|---|
 | `WM_MOUSEMOVE` | 同名消息，wParam/lParam 原样 | OS 派发时 wParam 已带 `MK_*` 位 |
 | `WM_LBUTTONDOWN` 等 | 同名消息原样 | 按下时 `SetCapture`，拖拽出界不断流 |
@@ -92,7 +92,7 @@ Windows 对鼠标消息有两套投递规则：
 | `WM_MOUSEWHEEL/HWHEEL` | 同名消息原样 | 焦点在覆盖窗时由 OS 直接送达；wParam 的 delta+MK 位、lParam 屏幕坐标都由 OS 组好 |
 | `WM_CLOSE` | **吞掉** | 覆盖窗持焦时 Alt+F4 不应销毁它（只能由开关/主窗口关闭来停） |
 | `WM_KEYDOWN`（VK_Q） | 不转发，本地消费 | Ctrl+Q → 回报 `CloseRequested`，UI 侧关闭转发；Ctrl 状态用 `GetKeyState` 取，lParam bit30 排除长按重键 |
-| `WM_ACTIVATE`（激活） | 给主窗口补发 `WM_ACTIVATE(1)` + `WM_SETFOCUS` | 复用 `PostMessageBackend::send_window_active`（脚本 `send_window_active()` 同款）；很多游戏只在内部"激活态"为真时接受输入 |
+| `WM_ACTIVATE`（激活） | 给**所有目标窗口**补发 `WM_ACTIVATE(1)` + `WM_SETFOCUS` | 复用 `PostMessageBackend::send_window_active`（脚本 `send_window_active()` 同款）；很多游戏只在内部"激活态"为真时接受输入 |
 
 ### 键盘（预留）
 
@@ -109,6 +109,7 @@ Windows 对鼠标消息有两套投递规则：
   - 窗口失效巡检发现主窗口槽失效 → `stop_overlay()`（与覆盖窗线程 50ms 自检双保险）
   - 重抓主窗口槽 → 停旧起新（换跟踪目标）；抓到本程序自身清绑定 → 停
   - 转发中切换 ⚑ 标记 → 换目标或停止
+- 目标窗口集合是**启动时的快照**：转发运行期间新增/删除窗口绑定不会自动生效，需关再开转发刷新（主窗口失效会自动停；向已失效的旧句柄 PostMessage 是空操作，无害）
 
 ## 验证
 
@@ -118,6 +119,7 @@ Windows 对鼠标消息有两套投递规则：
 ## 限制与风险
 
 - raw input / DirectInput 的游戏不响应 PostMessage 鼠标（与既有功能同边界；用户目标游戏已验证可行）
+- 广播坐标按主窗口（锚点）客户区原样投给所有目标，假设各目标客户区尺寸一致；尺寸不同的窗口会在同一像素偏移处触发、可能错位（多开同分辨率场景天然满足）
 - 独占全屏盖不过（仅窗口化/无边框有效）
 - 覆盖窗上是系统箭头，无法镜像游戏自绘光标（游戏内光标按转发坐标绘制正常）
 - 50ms 跟随有轻微拖影；均匀 50% 透明下文字也半透明
@@ -127,4 +129,4 @@ Windows 对鼠标消息有两套投递规则：
 
 - `UpdateLayeredWindow` 每像素 alpha：膜透字不透
 - `SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE)` 替换定时器：跟随无拖影
-- 键盘消息转发：覆盖窗焦点期间的按键同步给主窗口
+- 键盘消息转发：覆盖窗焦点期间的按键同步给目标窗口

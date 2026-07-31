@@ -24,7 +24,7 @@ fn main() {
     println!("目标窗口: {:?}", hwnd.0);
 
     let bus = MainEventBus::new();
-    let _overlay = match OverlayWindow::start(hwnd.0 as isize, bus.sender()) {
+    let _overlay = match OverlayWindow::start(hwnd.0 as isize, vec![hwnd.0 as isize], bus.sender()) {
         Ok(o) => o,
         Err(e) => {
             println!("✗ 启动失败: {}", e);
