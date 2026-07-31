@@ -91,12 +91,14 @@ Windows 对鼠标消息有两套投递规则：
 | `WM_*BUTTONDBLCLK` | 同名消息原样 | 依赖 `CS_DBLCLKS` |
 | `WM_MOUSEWHEEL/HWHEEL` | 同名消息原样 | 焦点在覆盖窗时由 OS 直接送达；wParam 的 delta+MK 位、lParam 屏幕坐标都由 OS 组好 |
 | `WM_CLOSE` | **吞掉** | 覆盖窗持焦时 Alt+F4 不应销毁它（只能由开关/主窗口关闭来停） |
-| `WM_KEYDOWN`（VK_ESCAPE） | 不转发，本地消费 | 500ms 内按两次 ESC → 回报 `CloseRequested`，UI 侧关闭转发；lParam bit30 排除长按重键 |
+| `WM_KEYDOWN`（VK_Q） | 不转发，本地消费 | Ctrl+Q → 回报 `CloseRequested`，UI 侧关闭转发；Ctrl 状态用 `GetKeyState` 取，lParam bit30 排除长按重键 |
 | `WM_ACTIVATE`（激活） | 给主窗口补发 `WM_ACTIVATE(1)` + `WM_SETFOCUS` | 复用 `PostMessageBackend::send_window_active`（脚本 `send_window_active()` 同款）；很多游戏只在内部"激活态"为真时接受输入 |
 
 ### 键盘（预留）
 
-覆盖窗持有焦点时键盘消息（`WM_KEYDOWN/UP`）同样送达本窗口。目前只消费了一个快捷键：**双击 ESC 关闭转发**（覆盖窗线程回报 `OverlayEvent::CloseRequested`，UI 侧执行 stop）。其余按键忽略；后续若需要全量键盘转发，可直接用项目已有的 PostMessage 发键机制（`send_key_down/up`，已验证）。
+覆盖窗持有焦点时键盘消息（`WM_KEYDOWN/UP`）同样送达本窗口。目前只消费了一个快捷键：**Ctrl+Q 关闭转发**（覆盖窗线程回报 `OverlayEvent::CloseRequested`，UI 侧执行 stop）。其余按键忽略；后续若需要全量键盘转发，可直接用项目已有的 PostMessage 发键机制（`send_key_down/up`，已验证）。
+
+> 选 Ctrl+Q 而非 Esc 系组合的原因：Esc 单按易误触，Ctrl+Esc / Alt+Esc 都是 Windows 系统级快捷键（开始菜单 / 窗口切换），系统会拦截、覆盖窗收不到，且会抢走焦点。Ctrl+Q 无系统冲突、语义直观。
 
 ## 事件回报与生命周期
 

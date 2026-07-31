@@ -472,7 +472,7 @@ impl App {
             }
             OverlayEvent::CloseRequested => {
                 self.stop_overlay();
-                self.status = "🖱 鼠标转发已关闭（双击 ESC）".to_string();
+                self.status = "🖱 鼠标转发已关闭（Ctrl+Q）".to_string();
             }
         }
     }
@@ -497,7 +497,7 @@ impl App {
         match OverlayWindow::start(hwnd_raw, self.events.sender()) {
             Ok(o) => {
                 self.overlay = Some(o);
-                self.status = "🖱 鼠标转发已开启：点击覆盖窗获取焦点后，鼠标操作（含滚轮）转发给主窗口；双击 ESC 关闭".to_string();
+                self.status = "🖱 鼠标转发已开启：点击覆盖窗获取焦点后，鼠标操作（含滚轮）转发给主窗口；Ctrl+Q 关闭".to_string();
             }
             Err(e) => self.status = format!("🖱 鼠标转发启动失败: {}", e),
         }
