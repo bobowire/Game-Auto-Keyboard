@@ -314,6 +314,11 @@ impl App {
         }
     }
 
+    /// 查找标记为主窗口（鼠标转发目标）的槽位索引
+    fn main_slot_index(&self) -> Option<usize> {
+        self.slots.iter().position(|s| s.is_main)
+    }
+
     /// 循环启动某槽位标识方案
     fn start_slot(&mut self, idx: usize) -> bool {
         self.run_slot(idx, false, 0)
@@ -465,6 +470,40 @@ impl App {
                 self.overlay = None;
                 self.status = "🖱 鼠标转发已停止：主窗口已关闭/失效".to_string();
             }
+        }
+    }
+
+    /// 开启鼠标转发：前置校验通过后启动覆盖窗线程
+    fn start_overlay(&mut self) {
+        if self.overlay.is_some() {
+            return;
+        }
+        let Some(idx) = self.main_slot_index() else {
+            self.status = "⚑ 请先标记主窗口（点槽位序号左侧的旗帜）".to_string();
+            return;
+        };
+        let Some(hwnd_raw) = self.slots[idx].hwnd else {
+            self.status = "⚠ 主窗口尚未绑定，请先抓取窗口".to_string();
+            return;
+        };
+        if !win32::is_valid(windows::Win32::Foundation::HWND(hwnd_raw as *mut _)) {
+            self.status = "⚠ 主窗口句柄已失效，请重新抓取窗口".to_string();
+            return;
+        }
+        match OverlayWindow::start(hwnd_raw, self.events.sender()) {
+            Ok(o) => {
+                self.overlay = Some(o);
+                self.status = "🖱 鼠标转发已开启：点击覆盖窗获取焦点后，鼠标操作（含滚轮）转发给主窗口".to_string();
+            }
+            Err(e) => self.status = format!("🖱 鼠标转发启动失败: {}", e),
+        }
+    }
+
+    /// 关闭鼠标转发
+    fn stop_overlay(&mut self) {
+        if let Some(mut o) = self.overlay.take() {
+            o.stop();
+            self.status = "🖱 鼠标转发已关闭".to_string();
         }
     }
 
@@ -899,6 +938,7 @@ impl App {
             TrayCommand::Quit => {
                 // 停止所有运行，落盘配置，标记真正退出，然后关闭
                 self.stop_voice();
+                self.stop_overlay();
                 self.stop_all();
                 self.save_config();
                 self.quitting = true;
@@ -977,6 +1017,9 @@ impl App {
                     self.slots[slot_idx].stop();
                     self.slots[slot_idx].hwnd = None;
                     self.slots[slot_idx].title.clear();
+                    if self.slots[slot_idx].is_main {
+                        self.stop_overlay();
+                    }
                     self.status = format!("窗口 {}: 抓取到本程序自己，已清空绑定", slot_idx + 1);
                     return;
                 }
@@ -988,6 +1031,11 @@ impl App {
                     title
                 };
                 self.status = format!("窗口 {} 已抓取: {}", slot_idx + 1, self.slots[slot_idx].title);
+                // 重抓的槽是主窗口且转发在跑：换目标（停旧起新）
+                if self.slots[slot_idx].is_main && self.overlay.is_some() {
+                    self.stop_overlay();
+                    self.start_overlay();
+                }
             } else {
                 self.status = "抓取失败：未找到前台窗口".to_string();
             }
@@ -1040,6 +1088,10 @@ impl App {
 
         for idx in &invalidated {
             let title = self.slots[*idx].title.clone();
+            // 失效的是主窗口 → 立即停止鼠标转发（覆盖窗线程也会 50ms 内自检，双保险）
+            if self.slots[*idx].is_main {
+                self.stop_overlay();
+            }
             self.slots[*idx].stop();
             self.slots[*idx].hwnd = None;
             self.slots[*idx].title.clear();
@@ -1952,6 +2004,7 @@ impl App {
         let mut act_stop_all = false;
         let mut act_pick = false;
         let mut act_toggle_voice = false;
+        let mut act_toggle_overlay = false;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // 顶部工具行
@@ -1976,6 +2029,20 @@ impl App {
                     .clicked()
                 {
                     act_toggle_voice = true;
+                }
+                // 鼠标转发开关
+                let overlay_on = self.overlay.is_some();
+                let overlay_label = if overlay_on { "🖱 转发: 开" } else { "🖱 转发: 关" };
+                if ui
+                    .button(egui::RichText::new(overlay_label).color(if overlay_on {
+                        egui::Color32::GREEN
+                    } else {
+                        egui::Color32::GRAY
+                    }))
+                    .on_hover_text("用半透明覆盖窗盖住主窗口客户区，把鼠标操作转发给主窗口")
+                    .clicked()
+                {
+                    act_toggle_overlay = true;
                 }
                 if ui.button("⚙ 设置").clicked() {
                     self.show_settings = true;
@@ -2048,6 +2115,13 @@ impl App {
                 self.stop_voice();
             } else {
                 self.start_voice();
+            }
+        }
+        if act_toggle_overlay {
+            if self.overlay.is_some() {
+                self.stop_overlay();
+            } else {
+                self.start_overlay();
             }
         }
     }
@@ -2238,6 +2312,15 @@ impl App {
                 self.slots[idx].is_main = true;
             }
             self.save_config();
+            // 转发在跑时切换主窗口 = 换跟踪目标
+            if self.overlay.is_some() {
+                self.stop_overlay();
+                if make_main {
+                    self.start_overlay(); // 新主窗口未绑定时内部会给出提示
+                } else {
+                    self.status = "🖱 已取消主窗口标记，鼠标转发停止".to_string();
+                }
+            }
         }
     }
 }
