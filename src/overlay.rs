@@ -18,6 +18,7 @@
 
 use crossbeam_channel::bounded;
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use windows::core::w;
 use windows::Win32::Foundation::{
@@ -30,18 +31,20 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetCapture, ReleaseCapture, SetCapture, VK_ESCAPE,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
     GetWindowLongPtrW, IsIconic, IsWindow, IsWindowVisible, LoadCursorW, PeekMessageW,
     PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterClassExW,
     SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, CS_DBLCLKS,
     CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, MSG, PM_NOREMOVE,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_QUIT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_TIMER, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_QUIT, WM_RBUTTONDBLCLK,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_TIMER, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::event_bus::{EventSender, MainEvent};
@@ -52,12 +55,16 @@ const OVERLAY_CLASS: windows::core::PCWSTR = w!("GAK_MouseOverlay");
 const FOLLOW_TIMER_ID: usize = 1;
 /// 跟随间隔（毫秒）
 const FOLLOW_INTERVAL_MS: u32 = 50;
+/// 双击 ESC 的时间窗（毫秒）：窗口内按两次 ESC 关闭转发
+const ESC_DOUBLE_PRESS_MS: u128 = 500;
 
 /// 覆盖窗回报给 UI 的事件
 #[derive(Debug, Clone)]
 pub enum OverlayEvent {
     /// 目标窗口已失效（关闭等）：覆盖窗已自毁，线程正在退出。UI 据此复位开关
     TargetLost,
+    /// 用户在覆盖窗上双击了 ESC：请求 UI 关闭转发（覆盖窗仍活着，等 UI 侧 stop）
+    CloseRequested,
 }
 
 /// 覆盖窗句柄（App 持有，控制启停）
@@ -206,6 +213,7 @@ fn run_loop(
             events: events.clone(),
             last_rect: RECT::default(),
             shown: false,
+            last_esc: None,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -246,6 +254,8 @@ struct WndState {
     events: EventSender,
     last_rect: RECT,
     shown: bool,
+    /// 上一次 ESC 按下时刻（双击 ESC 关闭转发用）
+    last_esc: Option<Instant>,
 }
 
 unsafe extern "system" fn overlay_wnd_proc(
@@ -308,6 +318,23 @@ unsafe extern "system" fn overlay_wnd_proc(
         }
         // 吞掉 WM_CLOSE：覆盖窗持有焦点时 Alt+F4 不应销毁它（只能由开关/主窗口关闭来停）
         WM_CLOSE => LRESULT(0),
+        // 双击 ESC（500ms 内两次）请求关闭转发；bit30 排除长按自动重键
+        WM_KEYDOWN if wparam.0 as u32 == VK_ESCAPE.0 as u32 => {
+            let st = &mut *ptr;
+            if lparam.0 & (1 << 30) == 0 {
+                let now = Instant::now();
+                let double = st
+                    .last_esc
+                    .map_or(false, |t| now.duration_since(t).as_millis() <= ESC_DOUBLE_PRESS_MS);
+                st.last_esc = Some(now);
+                if double {
+                    st.last_esc = None;
+                    st.events
+                        .send(MainEvent::Overlay(OverlayEvent::CloseRequested));
+                }
+            }
+            LRESULT(0)
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
