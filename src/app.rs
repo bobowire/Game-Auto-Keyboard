@@ -1019,7 +1019,7 @@ impl App {
     }
 
     /// 处理抓取窗口倒计时
-    fn handle_grabbing(&mut self) {
+    fn handle_grabbing(&mut self, ctx: &egui::Context) {
         let (Some(slot_idx), Some(since)) = (self.grabbing_slot, self.grabbing_since) else {
             return;
         };
@@ -1036,24 +1036,27 @@ impl App {
                         self.stop_overlay();
                     }
                     self.status = format!("窗口 {}: 抓取到本程序自己，已清空绑定", slot_idx + 1);
-                    return;
-                }
-                let title = win32::window_title(hwnd);
-                self.slots[slot_idx].hwnd = Some(hwnd.0 as isize);
-                self.slots[slot_idx].title = if title.is_empty() {
-                    format!("<无标题> ({:?})", hwnd.0)
                 } else {
-                    title
-                };
-                self.status = format!("窗口 {} 已抓取: {}", slot_idx + 1, self.slots[slot_idx].title);
-                // 重抓的槽是主窗口且转发在跑：换目标（停旧起新）
-                if self.slots[slot_idx].is_main && self.overlay.is_some() {
-                    self.stop_overlay();
-                    self.start_overlay();
+                    let title = win32::window_title(hwnd);
+                    self.slots[slot_idx].hwnd = Some(hwnd.0 as isize);
+                    self.slots[slot_idx].title = if title.is_empty() {
+                        format!("<无标题> ({:?})", hwnd.0)
+                    } else {
+                        title
+                    };
+                    self.status =
+                        format!("窗口 {} 已抓取: {}", slot_idx + 1, self.slots[slot_idx].title);
+                    // 重抓的槽是主窗口且转发在跑：换目标（停旧起新）
+                    if self.slots[slot_idx].is_main && self.overlay.is_some() {
+                        self.stop_overlay();
+                        self.start_overlay();
+                    }
                 }
             } else {
                 self.status = "抓取失败：未找到前台窗口".to_string();
             }
+            // 抓取完成：把我们自己的窗口激活、弹到最前面，给用户反馈
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
     }
 
@@ -1122,7 +1125,7 @@ impl eframe::App for App {
         // 所有后台事件（托盘/热键/语音）统一从总线取出分发
         self.dispatch_events(ctx);
         self.process_wakeword_training();
-        self.handle_grabbing();
+        self.handle_grabbing(ctx);
         self.handle_picking();
         self.check_window_validity();
 
