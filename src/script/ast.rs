@@ -8,13 +8,8 @@ pub enum Setting {
     AudioOnlyOnce,
 }
 
-/// 鼠标按钮
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum MouseButton {
-    Left,
-    Right,
-    Middle,
-}
+/// 鼠标按钮（复用 input::keymap::MouseButton，避免重复定义与桥接转换）
+pub use crate::input::keymap::MouseButton;
 
 /// 坐标定位方式
 #[derive(Debug, Clone, PartialEq)]

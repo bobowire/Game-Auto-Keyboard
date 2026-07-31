@@ -4,9 +4,56 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
     WM_ACTIVATE, WM_SETFOCUS,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, MapVirtualKeyW, MAPVK_VK_TO_VSC, VK_CONTROL, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+    VK_SHIFT,
+};
 use crate::input::backend::InputBackend;
 use crate::input::keymap::{parse_key, MouseButton};
+
+// MK_*（鼠标按键状态位，对应 Win32 MK_LBUTTON 等）。用字面量避免仅为这几个常量
+// 引入 Win32_System_SystemServices feature。
+const MK_LBUTTON: usize = 0x0001;
+const MK_RBUTTON: usize = 0x0002;
+const MK_SHIFT: usize = 0x0004;
+const MK_CONTROL: usize = 0x0008;
+const MK_MBUTTON: usize = 0x0010;
+
+/// 读取当前物理按键/修饰键状态，合成 wParam 的 MK_* 位。
+///
+/// 注意：GetKeyState 反映调用线程消息队列里的按键状态；后台注入线程通常无消息循环，
+/// 物理按键位多返回 0。因此 send_mouse_down/up 会对"正在模拟的那个按键"额外做
+/// 强制置位/清位，保证目标窗口看到正确的按下/弹起语义。
+fn current_mk_state() -> usize {
+    unsafe {
+        let mut mk = 0usize;
+        if GetKeyState(VK_LBUTTON.0 as i32) < 0 {
+            mk |= MK_LBUTTON;
+        }
+        if GetKeyState(VK_RBUTTON.0 as i32) < 0 {
+            mk |= MK_RBUTTON;
+        }
+        if GetKeyState(VK_MBUTTON.0 as i32) < 0 {
+            mk |= MK_MBUTTON;
+        }
+        if GetKeyState(VK_SHIFT.0 as i32) < 0 {
+            mk |= MK_SHIFT;
+        }
+        if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+            mk |= MK_CONTROL;
+        }
+        mk
+    }
+}
+
+/// 鼠标按钮 → MK_* 位
+fn button_mk(button: MouseButton) -> usize {
+    match button {
+        MouseButton::Left => MK_LBUTTON,
+        MouseButton::Right => MK_RBUTTON,
+        MouseButton::Middle => MK_MBUTTON,
+    }
+}
 
 pub struct PostMessageBackend;
 
@@ -56,11 +103,11 @@ impl InputBackend for PostMessageBackend {
     }
 
     fn send_mouse_move(&self, hwnd: HWND, x: i32, y: i32) -> Result<(), String> {
-        // LPARAM = MAKELPARAM(x, y)，WPARAM 为按键状态（移动时无按键则为 0）
+        // LPARAM = MAKELPARAM(x, y)，WPARAM = 当前 MK_* 按键状态
         let lparam = LPARAM(((y as isize) << 16) | (x as isize & 0xFFFF));
 
         unsafe {
-            PostMessageW(hwnd, WM_MOUSEMOVE, WPARAM(0), lparam)
+            PostMessageW(hwnd, WM_MOUSEMOVE, WPARAM(current_mk_state()), lparam)
                 .map_err(|e| format!("发送鼠标移动消息失败: {:?}", e))?;
         }
 
@@ -80,11 +127,13 @@ impl InputBackend for PostMessageBackend {
             MouseButton::Middle => WM_MBUTTONDOWN,
         };
 
-        // LPARAM = MAKELPARAM(x, y)
+        // LPARAM = MAKELPARAM(x, y)；WPARAM 强制置上本次按下的按键位（GetKeyState 在后台线程
+        // 多返回 0，不能反映被模拟的按键）
         let lparam = LPARAM(((y as isize) << 16) | (x as isize & 0xFFFF));
+        let wparam = current_mk_state() | button_mk(button);
 
         unsafe {
-            PostMessageW(hwnd, msg, WPARAM(0), lparam)
+            PostMessageW(hwnd, msg, WPARAM(wparam), lparam)
                 .map_err(|e| format!("发送鼠标消息失败: {:?}", e))?;
         }
 
@@ -99,9 +148,11 @@ impl InputBackend for PostMessageBackend {
         };
 
         let lparam = LPARAM(((y as isize) << 16) | (x as isize & 0xFFFF));
+        // 弹起时清掉本次释放的按键位
+        let wparam = current_mk_state() & !button_mk(button);
 
         unsafe {
-            PostMessageW(hwnd, msg, WPARAM(0), lparam)
+            PostMessageW(hwnd, msg, WPARAM(wparam), lparam)
                 .map_err(|e| format!("发送鼠标消息失败: {:?}", e))?;
         }
 

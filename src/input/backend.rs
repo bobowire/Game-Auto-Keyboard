@@ -41,21 +41,4 @@ pub trait InputBackend: Send + Sync {
 
     /// 发送窗口激活消息（欺骗窗口使其认为自己被激活）
     fn send_window_active(&self, hwnd: HWND) -> Result<(), String>;
-
-    // ===== 组合便捷方法 =====
-
-    /// 点击（按下+弹起）。button_or_key 既可能是鼠标按钮名也可能是键盘按键名。
-    /// x/y 仅在鼠标点击时有意义。
-    fn click(&self, hwnd: HWND, button_or_key: &str, x: i32, y: i32) -> Result<(), String> {
-        use crate::input::keymap::parse_mouse_button;
-
-        if let Some(btn) = parse_mouse_button(button_or_key) {
-            self.send_mouse_down(hwnd, btn, x, y)?;
-            self.send_mouse_up(hwnd, btn, x, y)?;
-        } else {
-            self.send_key_down(hwnd, button_or_key)?;
-            self.send_key_up(hwnd, button_or_key)?;
-        }
-        Ok(())
-    }
 }

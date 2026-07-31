@@ -1,7 +1,7 @@
 // 脚本执行引擎 - 解释执行 AST
 
 use crate::script::ast::*;
-use crate::input::{InputBackend, MouseButton as InputBtn};
+use crate::input::InputBackend;
 use crate::capture::{CaptureBackend, PrintWindowCapture, color_exists_in_area};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
@@ -117,17 +117,17 @@ impl<'a> ScriptExecutor<'a> {
             Command::MouseDown(btn, coord) => {
                 let (x, y) = self.resolve_coord(coord)?;
                 println!("[执行] mouse_down({:?}, {}, {})", btn, x, y);
-                self.input.send_mouse_down(self.hwnd, to_input_btn(*btn), x, y)?;
+                self.input.send_mouse_down(self.hwnd, *btn, x, y)?;
             }
             Command::MouseUp(btn) => {
                 println!("[执行] mouse_up({:?})", btn);
-                self.input.send_mouse_up(self.hwnd, to_input_btn(*btn), 0, 0)?;
+                self.input.send_mouse_up(self.hwnd, *btn, 0, 0)?;
             }
             Command::MouseClick(btn, coord) => {
                 let (x, y) = self.resolve_coord(coord)?;
                 println!("[执行] mouse_click({:?}, {}, {})", btn, x, y);
-                self.input.send_mouse_down(self.hwnd, to_input_btn(*btn), x, y)?;
-                self.input.send_mouse_up(self.hwnd, to_input_btn(*btn), x, y)?;
+                self.input.send_mouse_down(self.hwnd, *btn, x, y)?;
+                self.input.send_mouse_up(self.hwnd, *btn, x, y)?;
             }
             Command::If { condition, then_block, else_if_blocks } => {
                 if self.eval_bool_expr(condition)? {
@@ -234,13 +234,5 @@ impl<'a> ScriptExecutor<'a> {
                 (cw * px / 100, ch * py / 100, *w, *h)
             }
         })
-    }
-}
-
-fn to_input_btn(b: MouseButton) -> InputBtn {
-    match b {
-        MouseButton::Left => InputBtn::Left,
-        MouseButton::Right => InputBtn::Right,
-        MouseButton::Middle => InputBtn::Middle,
     }
 }
