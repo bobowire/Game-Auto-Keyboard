@@ -5,6 +5,12 @@
 // - 50ms 定时器跟随目标窗口移动/缩放；最小化/隐藏时隐藏，恢复后自动回来
 // - 目标窗口失效时自毁，并经事件总线回报 OverlayEvent::TargetLost
 //
+// 焦点模型（刻意不设 WS_EX_NOACTIVATE）：
+// - 转发模式下覆盖窗理应持有焦点——点击覆盖窗即获焦，焦点跟着用户的点击走
+// - 滚轮消息（WM_MOUSEWHEEL）按 Windows 规则只送给焦点窗口：覆盖窗获焦后
+//   滚轮直接进入本窗口消息循环，原样转发即可，无需安装任何全局钩子
+// - 键盘消息同理送达本窗口，现阶段忽略，后续可扩展为转发给主窗口
+//
 // 线程模型（照抄 hotkey/manager.rs 先例）：
 // - 覆盖窗活在独立线程的原生消息循环里（窗口必须在创建它的线程销毁）
 // - start() 用 bounded channel 同步等待创建结果 + Win32 线程 id
@@ -24,14 +30,18 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
     GetWindowLongPtrW, IsIconic, IsWindow, IsWindowVisible, LoadCursorW, PeekMessageW,
-    PostQuitMessage, PostThreadMessageW, RegisterClassExW, SetLayeredWindowAttributes, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
-    GWLP_USERDATA, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, MSG, PM_NOREMOVE, SWP_NOACTIVATE,
-    SWP_SHOWWINDOW, SW_HIDE, WM_DESTROY, WM_ERASEBKGND, WM_PAINT, WM_QUIT, WM_TIMER, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterClassExW,
+    SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, CS_DBLCLKS,
+    CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA, MSG, PM_NOREMOVE,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_QUIT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_TIMER, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::event_bus::{EventSender, MainEvent};
@@ -154,8 +164,9 @@ fn run_loop(
         }
 
         // 2. 创建窗口（隐藏创建，位置由首个 tick 确定，避免在 (0,0) 闪现）
+        //    刻意不带 WS_EX_NOACTIVATE：覆盖窗需要接受激活/焦点，滚轮才能进本窗口消息循环
         let hwnd = match CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             OVERLAY_CLASS,
             w!("鼠标转发覆盖窗"),
             WS_POPUP,
@@ -264,6 +275,39 @@ unsafe extern "system" fn overlay_wnd_proc(
             PostQuitMessage(0);
             LRESULT(0)
         }
+        // ===== 鼠标消息转发 =====
+        // wParam/lParam 原样转发：OS 派发时 wParam 已带 MK_* 位；
+        // WS_POPUP 无边框，客户区 == 窗口区，lParam 即目标客户区坐标
+        WM_MOUSEMOVE => {
+            forward(&*ptr, msg, wparam, lparam);
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
+            // 捕获鼠标：拖拽时光标移出覆盖窗边界也不断流
+            let _ = SetCapture(hwnd);
+            forward(&*ptr, msg, wparam, lparam);
+            // XBUTTON 消息要求返回 TRUE，其余返回 0
+            LRESULT(if msg == WM_XBUTTONDOWN { 1 } else { 0 })
+        }
+        WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP => {
+            if GetCapture() == hwnd {
+                let _ = ReleaseCapture();
+            }
+            forward(&*ptr, msg, wparam, lparam);
+            LRESULT(if msg == WM_XBUTTONUP { 1 } else { 0 })
+        }
+        WM_LBUTTONDBLCLK | WM_RBUTTONDBLCLK | WM_MBUTTONDBLCLK | WM_XBUTTONDBLCLK => {
+            forward(&*ptr, msg, wparam, lparam);
+            LRESULT(0)
+        }
+        // 滚轮：焦点在覆盖窗时由 OS 直接送进本消息循环，原样转发
+        // （wParam 的 MK_* 位与 delta、lParam 屏幕坐标都由 OS 组好）
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            forward(&*ptr, msg, wparam, lparam);
+            LRESULT(0)
+        }
+        // 吞掉 WM_CLOSE：覆盖窗持有焦点时 Alt+F4 不应销毁它（只能由开关/主窗口关闭来停）
+        WM_CLOSE => LRESULT(0),
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -328,6 +372,11 @@ unsafe fn follow_tick(hwnd: HWND, st: &mut WndState) {
         st.last_rect = target_rect;
         st.shown = true;
     }
+}
+
+/// 鼠标消息转发：原样投给目标窗口
+unsafe fn forward(st: &WndState, msg: u32, wparam: WPARAM, lparam: LPARAM) {
+    let _ = PostMessageW(st.target, msg, wparam, lparam);
 }
 
 /// 绘制半透明底色 + 居中提示文字（整体经 LWA_ALPHA 呈 50% 透明）
