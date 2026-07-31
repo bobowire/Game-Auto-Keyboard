@@ -4,16 +4,18 @@
 
 使用 **策略模式 (Strategy Pattern)** 通过 trait 抽象输入方式，核心优势：
 
-1. **可插拔**: 运行时切换输入后端，无需重启程序
+1. **可插拔**: 后端切换的扩展点已经预留（`InputManager`），但目前未接线
 2. **可扩展**: 新增后端只需实现 `InputBackend` trait
 3. **可测试**: 可以 mock 后端进行单元测试
 4. **解耦**: 脚本执行器不关心具体实现细节
 
 ### 支持的实现
 
-- **PostMessage** ✅: 后台发送（已验证可用）
-- **SendInput**: 前台发送（备用方案，高兼容性）
-- **驱动级**: 内核驱动（预留接口，应对特殊需求）
+- **PostMessage** ✅: 后台发送（**当前唯一实现**，已验证可用）
+- **SendInput**: 前台发送（**设计预留，代码未实现**，无 `src/input/send_input.rs`）
+- **驱动级**: 内核驱动（纯接口构想，未实现）
+
+> 现状提示：尽管 trait 设计为可切换，实际运行时只有 `PostMessageBackend` 一种实现，且由 `Runner` 直接 `new` 出来使用，`InputManager` 并未参与运行链路（详见下文“输入管理器”一节）。
 
 ## 核心 Trait
 
@@ -24,34 +26,46 @@
 **为什么要抽象成 trait？**
 
 1. **隔离变化点**: Windows 输入 API 有多种方式（PostMessage、SendInput、驱动），未来可能还有新方案
-2. **运行时切换**: 用户可在 UI 中动态切换后端，无需重启
+2. **预留切换能力**: `InputManager` 已为运行时切换留好接口（即便当前未接线）
 3. **渐进式开发**: 先实现 PostMessage，后续再补充其他方案
 4. **单元测试**: 可以创建 `MockBackend` 进行测试，不依赖真实窗口
 
+### 字符串驱动而非枚举
+
+一个关键设计：**trait 的键盘入参是 `&str`，不是 `Key` 枚举**。脚本层（`script::ast::Command::Down(String)` 等）从头到尾都把按键名当字符串传递，由 `input::keymap::parse_key` 在后端内部解析为虚拟键码 (VK)。这样做的好处是脚本解析器和后端彻底解耦，新增按键名只需改 keymap，不需要改 AST 和执行器。
+
 ### Trait 定义
+
+以下与 `src/input/backend.rs` 完全一致：
 
 ```rust
 use windows::Win32::Foundation::HWND;
-use crate::script::ast::{Key, MouseButton};
+use crate::input::keymap::MouseButton;
 
 /// 输入后端 trait（策略模式）
+///
+/// 脚本引擎以字符串名称驱动按键（如 "A"、"space"、"left"），
+/// 各后端负责把名称解析为具体的 VK 码/鼠标消息并发送。
 pub trait InputBackend: Send + Sync {
     /// 后端名称（用于 UI 显示/切换）
     fn name(&self) -> &str;
-    
+
     /// 是否支持后台发送（窗口非激活状态）
     fn supports_background(&self) -> bool;
-    
+
     // ===== 键盘接口 =====
-    
-    /// 发送键盘按下事件
-    fn send_key_down(&self, hwnd: HWND, key: Key) -> Result<(), String>;
-    
+
+    /// 发送键盘按下事件（key 为按键名，如 "A"、"space"、"f1"）
+    fn send_key_down(&self, hwnd: HWND, key: &str) -> Result<(), String>;
+
     /// 发送键盘弹起事件
-    fn send_key_up(&self, hwnd: HWND, key: Key) -> Result<(), String>;
-    
+    fn send_key_up(&self, hwnd: HWND, key: &str) -> Result<(), String>;
+
     // ===== 鼠标接口 =====
-    
+
+    /// 发送鼠标移动事件（客户区坐标）
+    fn send_mouse_move(&self, hwnd: HWND, x: i32, y: i32) -> Result<(), String>;
+
     /// 发送鼠标按下事件（客户区坐标）
     fn send_mouse_down(
         &self,
@@ -60,32 +74,99 @@ pub trait InputBackend: Send + Sync {
         x: i32,
         y: i32,
     ) -> Result<(), String>;
-    
-    /// 发送鼠标弹起事件
-    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton) -> Result<(), String>;
+
+    /// 发送鼠标弹起事件（注意：弹起也带 x/y 坐标）
+    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton, x: i32, y: i32) -> Result<(), String>;
+
+    // ===== 窗口消息 =====
+
+    /// 发送窗口激活消息（欺骗窗口使其认为自己被激活）
+    fn send_window_active(&self, hwnd: HWND) -> Result<(), String>;
+
+    // ===== 组合便捷方法 =====
+
+    /// 点击（按下+弹起）。button_or_key 既可能是鼠标按钮名也可能是键盘按键名。
+    /// x/y 仅在鼠标点击时有意义。
+    fn click(&self, hwnd: HWND, button_or_key: &str, x: i32, y: i32) -> Result<(), String> {
+        use crate::input::keymap::parse_mouse_button;
+
+        if let Some(btn) = parse_mouse_button(button_or_key) {
+            self.send_mouse_down(hwnd, btn, x, y)?;
+            self.send_mouse_up(hwnd, btn, x, y)?;
+        } else {
+            self.send_key_down(hwnd, button_or_key)?;
+            self.send_key_up(hwnd, button_or_key)?;
+        }
+        Ok(())
+    }
 }
 ```
 
-### Trait 要求说明
+### Trait 方法说明
 
 | 方法 | 说明 | 返回值 |
 |------|------|--------|
 | `name()` | 后端唯一标识，用于 UI 显示和配置存储 | `&str` |
 | `supports_background()` | 是否支持后台发送（影响 UI 提示） | `bool` |
-| `send_key_down()` | 发送按键按下事件 | `Result<(), String>` |
+| `send_key_down()` | 发送按键按下事件，`key` 为按键名字符串 | `Result<(), String>` |
 | `send_key_up()` | 发送按键弹起事件 | `Result<(), String>` |
+| `send_mouse_move()` | 发送鼠标移动（客户区坐标） | `Result<(), String>` |
 | `send_mouse_down()` | 发送鼠标按下事件（客户区坐标） | `Result<(), String>` |
-| `send_mouse_up()` | 发送鼠标弹起事件 | `Result<(), String>` |
+| `send_mouse_up()` | 发送鼠标弹起事件（同样带 x/y 坐标） | `Result<(), String>` |
+| `send_window_active()` | 发送窗口激活消息（`WM_ACTIVATE` + `WM_SETFOCUS`） | `Result<(), String>` |
+| `click()` | **默认实现**：自动区分鼠标/键盘后做按下+弹起 | `Result<(), String>` |
 
 ### 关键约束
 
 - **线程安全**: `Send + Sync` 保证可以在执行线程中调用
 - **错误处理**: 所有方法返回 `Result`，便于上层处理失败情况
-- **坐标系统**: 鼠标坐标统一使用**客户区坐标**，具体实现负责转换
+- **坐标系统**: 鼠标坐标统一使用**客户区坐标**，由调用方（`ScriptExecutor::resolve_coord`）负责转换
+- **字符串驱动**: 键盘入参是 `&str`，由后端内部调 `keymap::parse_key` 解析为 VK
 
 ---
 
-## 实现 1: PostMessage 后端
+## 键鼠名称与 keymap
+
+**位置**: `src/input/keymap.rs`
+
+trait 把"按键名 → VK"的解析放在后端内部，统一走 keymap 模块。其中两个函数尤其重要：
+
+### `parse_key(name: &str) -> Result<u16, String>`
+
+把按键名解析为虚拟键码，支持：
+
+- 单字符：字母 `a`-`z`、数字 `0`-`9`
+- 功能键：`f1`-`f24`
+- 特殊键：`space`/`spacebar`、`enter`/`return`、`tab`、`esc`/`escape`、`backspace`/`back`、`shift`、`ctrl`/`control`、`alt`/`menu`、`capslock`/`caps`
+- 方向键：`up`、`down`、**`left`、`right`**（注意：解析为 `VK_LEFT` / `VK_RIGHT` 方向键）
+- 编辑键：`home`、`end`、`pageup`/`pgup`、`pagedown`/`pgdn`、`insert`/`ins`、`delete`/`del`
+- 小键盘：`num0`-`num9`
+
+### `parse_mouse_button(name: &str) -> Option<MouseButton>`
+
+把按键名解析为鼠标按钮：
+
+| 名称 | 解析结果 |
+|------|----------|
+| `left` / `lbutton` / `mouse_left` | `MouseButton::Left` |
+| `right` / `rbutton` / `mouse_right` | `MouseButton::Right` |
+| `middle` / `mbutton` / `mouse_middle` | `MouseButton::Middle` |
+| 其他 | `None` |
+
+### ⚠️ 键鼠歧义（重要）
+
+注意 `parse_key` 和 `parse_mouse_button` 对 `"left"` / `"right"` 这两个名字的解读**冲突**：
+
+- `parse_key("left")` → `VK_LEFT`（方向键）
+- `parse_mouse_button("left")` → `MouseButton::Left`（鼠标左键）
+
+实际调用链靠 **`click()` 默认实现的解析顺序**消歧：它先 `parse_mouse_button`，命中就走鼠标路径；不命中才退回 `send_key_down/up`（此时 `"left"` 才被解释成方向键）。
+
+⚠️ 但要注意：`ScriptExecutor` 当前**并未调用** trait 的 `click()` 默认实现（详见下文“调用链”），键盘 `click("left")` 在执行器里走的是 `send_key_down + send_key_up`，会被 `parse_key` 解释成**方向键**而非鼠标。鼠标点击则由 AST 层的 `Command::MouseClick(MouseButton, Coord)` 显式带枚举进入，不经过字符串歧义路径。
+
+---
+
+## 唯一实现：PostMessage 后端
 
 **位置**: `src/input/post_message.rs`
 
@@ -94,206 +175,193 @@ pub trait InputBackend: Send + Sync {
 - ✅ **已验证可用**（用户确认）
 - ✅ 无需激活窗口
 - ⚠️ 兼容性：对普通程序/老游戏有效，现代 3D 游戏可能需要其他方案
+- ⚠️ 鼠标消息 `wParam` 恒为 0（见下方“已知限制”）
 
-### 实现原理
+### 键盘实现
+
+通过 `parse_key` 拿到 VK，再用 `MapVirtualKeyW(MAPVK_VK_TO_VSC)` 反查扫描码构造 `lParam`：
 
 ```rust
-use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN, WM_KEYUP};
-use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC};
+fn send_key_down(&self, hwnd: HWND, key: &str) -> Result<(), String> {
+    let vk = parse_key(key)?;
+    let scan_code = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
 
-pub struct PostMessageBackend;
+    // LPARAM = (scan_code << 16) | repeat_count(1)
+    let lparam = LPARAM(((scan_code as isize) << 16) | 1);
 
-impl InputBackend for PostMessageBackend {
-    fn name(&self) -> &str {
-        "PostMessage (后台)"
+    unsafe {
+        PostMessageW(hwnd, WM_KEYDOWN, WPARAM(vk as usize), lparam)
+            .map_err(|e| format!("PostMessage 失败: {:?}", e))?;
     }
-    
-    fn supports_background(&self) -> bool {
-        true
-    }
-    
-    fn send_key_down(&self, hwnd: HWND, key: Key) -> Result<(), String> {
-        let vk = self.key_to_vk(key)?;
-        let scan_code = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
-        
-        // LPARAM = (scan_code << 16) | repeat_count(1)
-        let lparam = ((scan_code as isize) << 16) | 1;
-        
-        unsafe {
-            PostMessageW(hwnd, WM_KEYDOWN, vk as usize, lparam)
-                .map_err(|e| format!("PostMessage 失败: {:?}", e))?;
-        }
-        
-        Ok(())
-    }
-    
-    fn send_key_up(&self, hwnd: HWND, key: Key) -> Result<(), String> {
-        let vk = self.key_to_vk(key)?;
-        let scan_code = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
-        
-        // LPARAM = (scan_code << 16) | 0xC0000001 (transition & previous state)
-        let lparam = ((scan_code as isize) << 16) | 0xC0000001;
-        
-        unsafe {
-            PostMessageW(hwnd, WM_KEYUP, vk as usize, lparam)
-                .map_err(|e| format!("PostMessage 失败: {:?}", e))?;
-        }
-        
-        Ok(())
-    }
-    
-    // ... 鼠标实现类似（WM_LBUTTONDOWN 等）
+
+    Ok(())
 }
 
-impl PostMessageBackend {
-    fn key_to_vk(&self, key: Key) -> Result<u8, String> {
-        match key {
-            Key::VirtualKey(vk) => Ok(vk),
-            Key::Char(c) => {
-                // 使用 VkKeyScanW 转换字符到 VK 码
-                let result = unsafe { VkKeyScanW(c as u16) };
-                if result == -1 {
-                    Err(format!("无法转换字符 '{}' 到虚拟键码", c))
-                } else {
-                    Ok((result & 0xFF) as u8)
-                }
-            }
-        }
+fn send_key_up(&self, hwnd: HWND, key: &str) -> Result<(), String> {
+    let vk = parse_key(key)?;
+    let scan_code = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
+
+    // LPARAM = (scan_code << 16) | 0xC0000001 (transition & previous state)
+    let lparam = LPARAM(((scan_code as isize) << 16) | 0xC0000001u32 as isize);
+
+    unsafe {
+        PostMessageW(hwnd, WM_KEYUP, WPARAM(vk as usize), lparam)
+            .map_err(|e| format!("PostMessage 失败: {:?}", e))?;
     }
+
+    Ok(())
 }
 ```
 
-### 鼠标消息
+| 消息 | `wParam` | `lParam` 构造 |
+|------|----------|---------------|
+| `WM_KEYDOWN` | VK 码 | `(scan_code << 16) \| 1` |
+| `WM_KEYUP` | VK 码 | `(scan_code << 16) \| 0xC0000001` |
+
+### 鼠标实现
 
 ```rust
-fn send_mouse_down(&self, hwnd: HWND, button: MouseButton, x: i32, y: i32) 
-    -> Result<(), String> 
+fn send_mouse_down(&self, hwnd: HWND, button: MouseButton, x: i32, y: i32)
+    -> Result<(), String>
 {
     let msg = match button {
         MouseButton::Left => WM_LBUTTONDOWN,
         MouseButton::Right => WM_RBUTTONDOWN,
         MouseButton::Middle => WM_MBUTTONDOWN,
     };
-    
-    // WPARAM = 鼠标按键状态（MK_LBUTTON 等）
+
     // LPARAM = MAKELPARAM(x, y)
-    let lparam = ((y as isize) << 16) | (x as isize & 0xFFFF);
-    
+    let lparam = LPARAM(((y as isize) << 16) | (x as isize & 0xFFFF));
+
     unsafe {
-        PostMessageW(hwnd, msg, 0, lparam)
+        PostMessageW(hwnd, msg, WPARAM(0), lparam)
             .map_err(|e| format!("发送鼠标消息失败: {:?}", e))?;
     }
-    
+
     Ok(())
 }
 ```
 
----
+| 消息 | `wParam` | `lParam` 构造 |
+|------|----------|---------------|
+| `WM_LBUTTONDOWN` / `WM_RBUTTONDOWN` / `WM_MBUTTONDOWN` | **恒为 `0`** | `MAKELPARAM(x, y) = (y << 16) \| (x & 0xFFFF)` |
+| `WM_LBUTTONUP` / `WM_RBUTTONUP` / `WM_MBUTTONUP` | **恒为 `0`** | `MAKELPARAM(x, y)` |
+| `WM_MOUSEMOVE` | **恒为 `0`** | `MAKELPARAM(x, y)` |
 
-## 实现 2: SendInput 后端
-
-**位置**: `src/input/send_input.rs`
-
-### 特点
-- ❌ 不支持后台（窗口必须在前台）
-- ✅ 兼容性强（所有程序都能收到）
-- ⚠️ 需要先激活窗口
-
-### 实现原理
+### 窗口激活实现
 
 ```rust
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-};
+fn send_window_active(&self, hwnd: HWND) -> Result<(), String> {
+    unsafe {
+        // WM_ACTIVATE: WPARAM = 激活类型 (WA_ACTIVE=1)，LPARAM = 上一个激活窗口（传 0）
+        PostMessageW(hwnd, WM_ACTIVATE, WPARAM(1), LPARAM(0))
+            .map_err(|e| format!("发送 WM_ACTIVATE 失败: {:?}", e))?;
 
-pub struct SendInputBackend;
+        // WM_SETFOCUS: 通知窗口获得键盘焦点
+        PostMessageW(hwnd, WM_SETFOCUS, WPARAM(0), LPARAM(0))
+            .map_err(|e| format!("发送 WM_SETFOCUS 失败: {:?}", e))?;
+    }
 
-impl InputBackend for SendInputBackend {
-    fn name(&self) -> &str {
-        "SendInput (前台)"
-    }
-    
-    fn supports_background(&self) -> bool {
-        false
-    }
-    
-    fn send_key_down(&self, hwnd: HWND, key: Key) -> Result<(), String> {
-        // 1. 先激活窗口
-        self.activate_window(hwnd)?;
-        
-        // 2. 构造 INPUT 结构
-        let vk = self.key_to_vk(key)?;
-        let mut input = INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: vk as u16,
-                    wScan: 0,
-                    dwFlags: 0,  // 按下
-                    time: 0,
-                    dwExtraInfo: 0,
-                },
-            },
-        };
-        
-        // 3. 发送输入
-        unsafe {
-            let sent = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
-            if sent != 1 {
-                return Err("SendInput 失败".to_string());
-            }
-        }
-        
-        Ok(())
-    }
-    
-    fn send_key_up(&self, hwnd: HWND, key: Key) -> Result<(), String> {
-        self.activate_window(hwnd)?;
-        
-        let vk = self.key_to_vk(key)?;
-        let mut input = INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: vk as u16,
-                    wScan: 0,
-                    dwFlags: KEYEVENTF_KEYUP,  // 弹起
-                    time: 0,
-                    dwExtraInfo: 0,
-                },
-            },
-        };
-        
-        unsafe {
-            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
-        }
-        
-        Ok(())
-    }
+    Ok(())
 }
+```
 
-impl SendInputBackend {
-    fn activate_window(&self, hwnd: HWND) -> Result<(), String> {
-        unsafe {
-            SetForegroundWindow(hwnd);
-            // 等待窗口激活（可选）
-            std::thread::sleep(std::time::Duration::from_millis(50));
+### 已知限制 / 待办
+
+- **鼠标消息 `wParam` 恒为 0**：按 Win32 规范，`WM_LBUTTONDOWN` 等消息的 `wParam` 应为按键状态标志（`MK_LBUTTON` / `MK_SHIFT` 等，表示同时按下的修饰键）。当前实现**没有构造这些标志位，全部传 `WPARAM(0)`**。
+  - 影响：依赖 `wParam` 判断“拖拽时是否带 Shift/Ctrl”的目标程序会拿不到修饰键状态。
+  - 当前未发现实际故障，作为已知坑记录，后续视需求补充 `MK_*` 标志位合成。
+
+---
+
+## 调用链：ScriptExecutor 如何使用后端
+
+**位置**: `src/script/executor.rs`
+
+`ScriptExecutor` 持有 `input: &'a dyn InputBackend` 和目标 `hwnd`，`execute_command` 按 `Command` 变体分发：
+
+```rust
+fn execute_command(&self, cmd: &Command) -> Result<(), String> {
+    match cmd {
+        Command::Down(key)       => self.input.send_key_down(self.hwnd, key)?,
+        Command::Up(key)         => self.input.send_key_up(self.hwnd, key)?,
+        Command::Click(key)      => {
+            // 注意：执行器并未调用 trait 的 click() 默认实现，
+            // 而是直接走键盘 down/up（所以 "left" 在此会被解释为方向键）
+            self.input.send_key_down(self.hwnd, key)?;
+            self.input.send_key_up(self.hwnd, key)?;
         }
-        Ok(())
+        Command::ClickMs(key, ms)=> {
+            self.input.send_key_down(self.hwnd, key)?;
+            self.sleep_ms(*ms);
+            self.input.send_key_up(self.hwnd, key)?;
+        }
+        Command::SendWindowActive => self.input.send_window_active(self.hwnd)?,
+        Command::MouseMove(coord) => {
+            let (x, y) = self.resolve_coord(coord)?;
+            self.input.send_mouse_move(self.hwnd, x, y)?;
+        }
+        Command::MouseDown(btn, coord) => {
+            let (x, y) = self.resolve_coord(coord)?;
+            self.input.send_mouse_down(self.hwnd, to_input_btn(*btn), x, y)?;
+        }
+        Command::MouseUp(btn) => {
+            // 注意：弹起事件没有坐标上下文，固定传 (0, 0)
+            self.input.send_mouse_up(self.hwnd, to_input_btn(*btn), 0, 0)?;
+        }
+        Command::MouseClick(btn, coord) => {
+            let (x, y) = self.resolve_coord(coord)?;
+            self.input.send_mouse_down(self.hwnd, to_input_btn(*btn), x, y)?;
+            self.input.send_mouse_up(self.hwnd, to_input_btn(*btn), x, y)?;
+        }
+        Command::Setting(_) | Command::If { .. } => { /* 略 */ }
+    }
+    Ok(())
+}
+```
+
+### 坐标转换：`resolve_coord`
+
+`Coord`（来自 AST）有三种变体，`resolve_coord` 借助 `GetClientRect` 取客户区尺寸后统一转成客户区绝对像素坐标：
+
+| `Coord` 变体 | 转换公式 |
+|--------------|----------|
+| `Absolute { x, y }` | 直接使用 `(x, y)` |
+| `Center { dx, dy }` | `(w/2 + dx, h/2 + dy)` |
+| `Percent { px, py }` | `(w * px / 100, h * py / 100)` |
+
+### 两个 `MouseButton` 枚举的桥接
+
+代码里存在两个结构相同但独立的枚举：
+
+- `script::ast::MouseButton` —— AST/脚本层使用
+- `input::keymap::MouseButton` —— `InputBackend` 接口使用
+
+执行器用私有函数 `to_input_btn` 在两者间转换：
+
+```rust
+fn to_input_btn(b: script::ast::MouseButton) -> input::keymap::MouseButton {
+    match b {
+        MouseButton::Left => InputBtn::Left,
+        MouseButton::Right => InputBtn::Right,
+        MouseButton::Middle => InputBtn::Middle,
     }
 }
 ```
 
 ---
 
-## 输入管理器
+## 输入管理器（已定义但未接线）
 
 **位置**: `src/input/mod.rs`
 
-```rust
-use std::sync::Arc;
+`InputManager` 设计为本应负责后端注册与切换的管理者，但**当前是死代码**：
 
-/// 全局输入后端管理器
+- 结构体和方法都已定义（`current` / `available` / `switch_backend` / `available_backends`）
+- 在 `src/lib.rs` 中被 re-export
+- 但**全项目没有任何地方实例化它**（`InputManager::new()` 没有被调用）
+
+```rust
 pub struct InputManager {
     current: Arc<dyn InputBackend>,
     available: Vec<Arc<dyn InputBackend>>,
@@ -301,77 +369,87 @@ pub struct InputManager {
 
 impl InputManager {
     pub fn new() -> Self {
+        // 即便被调用，也只注册 PostMessageBackend 一种
         let backends: Vec<Arc<dyn InputBackend>> = vec![
             Arc::new(PostMessageBackend::new()),
-            Arc::new(SendInputBackend::new()),
         ];
-        
-        let current = backends[0].clone();  // 默认 PostMessage
-        
-        Self {
-            current,
-            available: backends,
-        }
+        let current = backends[0].clone();
+        Self { current, available: backends }
     }
-    
-    /// 获取当前后端
-    pub fn current(&self) -> Arc<dyn InputBackend> {
-        self.current.clone()
-    }
-    
-    /// 切换后端
-    pub fn switch_backend(&mut self, name: &str) -> Result<(), String> {
-        for backend in &self.available {
-            if backend.name() == name {
-                self.current = backend.clone();
-                return Ok(());
-            }
-        }
-        Err(format!("未找到后端: {}", name))
-    }
-    
-    /// 获取所有可用后端名称
-    pub fn available_backends(&self) -> Vec<String> {
-        self.available.iter().map(|b| b.name().to_string()).collect()
-    }
+    // current() / switch_backend() / available_backends() 略
 }
 ```
+
+### 真实运行链路：绕过 InputManager
+
+实际运行时由 `Runner` 直接实例化后端，完全不经过 `InputManager`：
+
+**位置**: `src/runner.rs`
+
+```rust
+fn spawn(hwnd_raw: isize, commands: Vec<Command>, once: bool, initial_delay_ms: u64) -> Self {
+    // ...
+    let handle = thread::spawn(move || {
+        // ...
+        let backend = PostMessageBackend::new();           // ← 直接 new
+        let hwnd = windows::Win32::Foundation::HWND(hwnd_raw as *mut _);
+
+        loop {
+            if stop_clone.load(Ordering::Relaxed) { break; }
+            let executor = ScriptExecutor::new(&backend, hwnd);   // ← 借给执行器
+            if let Err(e) = executor.execute_interruptible(&commands, &stop_clone) {
+                eprintln!("脚本执行出错: {}", e);
+                break;
+            }
+            if once || commands.is_empty() { break; }
+        }
+    });
+    // ...
+}
+```
+
+此外 `src/app.rs` 和 `src/overlay.rs`（鼠标转发覆盖窗）也各自直接 `PostMessageBackend::new()`。
+
+> 小结：`InputManager` 是为“运行时切换后端 / UI 下拉选择后端”预留的扩展点。在 `SendInputBackend` 等其他后端落地之前，它不会进入运行链路。
 
 ---
 
 ## 使用示例
 
-### 在脚本执行器中使用
+### 在脚本执行器中使用（实际签名）
+
+`ScriptExecutor::new` 接收 `&dyn InputBackend`，执行器内部按上面“调用链”一节的方式分发：
 
 ```rust
-impl ScriptExecutor {
-    pub fn execute_command(
-        &self,
-        cmd: &Command,
-        hwnd: HWND,
-        input_backend: &Arc<dyn InputBackend>,
-    ) -> Result<(), String> {
-        match cmd {
-            Command::Down(key) => {
-                input_backend.send_key_down(hwnd, *key)?;
-            }
-            Command::Up(key) => {
-                input_backend.send_key_up(hwnd, *key)?;
-            }
-            Command::Click(key) => {
-                input_backend.send_key_down(hwnd, *key)?;
-                input_backend.send_key_up(hwnd, *key)?;
-            }
-            Command::ClickMs(key, delay) => {
-                input_backend.send_key_down(hwnd, *key)?;
-                std::thread::sleep(std::time::Duration::from_millis(*delay as u64));
-                input_backend.send_key_up(hwnd, *key)?;
-            }
-            // ... 其他命令
+impl<'a> ScriptExecutor<'a> {
+    pub fn new(input: &'a dyn InputBackend, hwnd: HWND) -> Self {
+        Self {
+            input,
+            hwnd,
+            stop_flag: None,
+            capture: Box::new(PrintWindowCapture::new()),
         }
-        Ok(())
     }
 }
+```
+
+### 简单测试工具
+
+**位置**: `examples/script_test.rs`（实际存在）
+
+```rust
+use game_auto_keyboard::input::PostMessageBackend;
+
+fn main() {
+    // ...
+    let backend = PostMessageBackend::new();
+    // ...
+}
+```
+
+运行：
+```bash
+cargo run --example script_test
 ```
 
 ---
@@ -387,32 +465,35 @@ impl ScriptExecutor {
 ```rust
 use crate::input::backend::InputBackend;
 use windows::Win32::Foundation::HWND;
-use crate::script::ast::{Key, MouseButton};
+use crate::input::keymap::MouseButton;
 
 pub struct AhkBackend {
     // AHK 实例句柄或进程通信通道
 }
 
 impl InputBackend for AhkBackend {
-    fn name(&self) -> &str {
-        "AutoHotkey ControlSend"
-    }
-    
-    fn supports_background(&self) -> bool {
-        true  // AHK 的 ControlSend 支持后台
-    }
-    
-    fn send_key_down(&self, hwnd: HWND, key: Key) -> Result<(), String> {
-        // 调用 AHK COM 接口或命令行
+    fn name(&self) -> &str { "AutoHotkey ControlSend" }
+
+    fn supports_background(&self) -> bool { true }  // AHK 的 ControlSend 支持后台
+
+    fn send_key_down(&self, hwnd: HWND, key: &str) -> Result<(), String> {
+        // 注意：key 是字符串，由后端自行决定如何解析（可复用 keymap::parse_key）
         // ahk.exe script.ahk "ControlSend {a down}, , ahk_id %hwnd%"
         todo!()
     }
-    
-    // ... 实现其他方法
+
+    fn send_key_up(&self, hwnd: HWND, key: &str) -> Result<(), String> { todo!() }
+    fn send_mouse_move(&self, hwnd: HWND, x: i32, y: i32) -> Result<(), String> { todo!() }
+    fn send_mouse_down(&self, hwnd: HWND, button: MouseButton, x: i32, y: i32) -> Result<(), String> { todo!() }
+    fn send_mouse_up(&self, hwnd: HWND, button: MouseButton, x: i32, y: i32) -> Result<(), String> { todo!() }
+    fn send_window_active(&self, hwnd: HWND) -> Result<(), String> { todo!() }
+    // click() 已有默认实现，可不重写
 }
 ```
 
 #### 2. 在 `src/input/mod.rs` 中注册
+
+把新后端加入 `InputManager::new()` 的列表（同时建议在 `Runner::spawn` 增加后端选择参数，让 `InputManager` 真正进入运行链路）：
 
 ```rust
 mod ahk_backend;
@@ -422,78 +503,38 @@ impl InputManager {
     pub fn new() -> Self {
         let backends: Vec<Arc<dyn InputBackend>> = vec![
             Arc::new(PostMessageBackend::new()),
-            Arc::new(SendInputBackend::new()),
-            Arc::new(AhkBackend::new()),  // ← 新增
+            Arc::new(AhkBackend::new()),   // ← 新增
         ];
         // ...
     }
 }
 ```
 
-#### 3. 无需修改其他代码
+#### 3. 让 Runner 真正使用 InputManager（当前未做）
 
-执行器、UI、配置系统自动支持新后端，只需在下拉框中选择即可。
-
----
-
-## 扩展：驱动级后端（预留）
-
-### 接口定义
-
-```rust
-/// 【阶段6】驱动级输入（需要安装内核驱动）
-pub struct InterceptionBackend {
-    driver_handle: Option<*mut c_void>,
-}
-
-impl InputBackend for InterceptionBackend {
-    fn name(&self) -> &str {
-        "Interception Driver (驱动级)"
-    }
-    
-    fn supports_background(&self) -> bool {
-        true
-    }
-    
-    // 实现需要调用 interception.dll
-}
-```
-
-### 注意事项
-1. 需要安装内核驱动（需要管理员权限）
-2. 部分反作弊会检测驱动
-3. 兼容性最强，但复杂度高
+目前 `Runner` 是写死 `PostMessageBackend::new()` 的。要让新后端生效，需要改成从 `InputManager` 取当前后端，并接通 UI 切换入口。
 
 ---
 
-## 测试工具设计
+## 扩展：SendInput / 驱动级后端（均未实现）
 
-### 简单测试工具
+### SendInput 后端（设计预留，代码未实现）
 
-```rust
-// 位置: examples/test_input.rs
+⚠️ **当前不存在 `src/input/send_input.rs`，也没有 `SendInputBackend` 类型。** 以下是设想中的设计要点：
 
-fn main() {
-    let backend = PostMessageBackend::new();
-    
-    println!("请在 5 秒内点击目标窗口...");
-    std::thread::sleep(Duration::from_secs(5));
-    
-    let hwnd = unsafe { GetForegroundWindow() };
-    println!("目标窗口: {:?}", hwnd);
-    
-    println!("发送字符 'a'...");
-    backend.send_key_down(hwnd, Key::Char('a')).unwrap();
-    backend.send_key_up(hwnd, Key::Char('a')).unwrap();
-    
-    println!("测试完成，检查目标窗口是否收到输入");
-}
-```
+- ❌ 不支持后台（窗口必须在前台）
+- ✅ 兼容性强（所有程序都能收到）
+- ⚠️ 需要先激活窗口（`SetForegroundWindow`）
+- 预期走 `SendInput` + `INPUT_KEYBOARD` / `INPUT_MOUSE`
 
-运行测试：
-```bash
-cargo run --example test_input
-```
+实现时需补齐 trait 全部方法（含 `send_mouse_move`、`send_window_active`、`click` 默认实现可不重写）。
+
+### 驱动级后端（接口构想）
+
+- 预期走 Interception 驱动（`interception.dll`）
+- 需要安装内核驱动（需要管理员权限）
+- 部分反作弊会检测驱动
+- 兼容性最强，但复杂度高
 
 ---
 
@@ -501,23 +542,19 @@ cargo run --example test_input
 
 | 特性 | PostMessage ✅ | SendInput | Interception |
 |------|---------------|-----------|--------------|
-| 后台发送 | ✅ **已验证** | ❌ | ✅ |
-| 兼容性 | ✅ 普通程序<br>⚠️ 部分游戏 | ✅ 通用 | ✅ 通用 |
+| 实现状态 | **✅ 已实现并验证** | ❌ 未实现（无对应文件） | ❌ 未实现（纯构想） |
+| 后台发送 | ✅ **已验证** | ❌（需前台） | ✅ |
+| 兼容性 | ✅ 普通程序<br>⚠️ 部分 3D 游戏 | ✅ 通用 | ✅ 通用 |
 | 安装要求 | 无 | 无 | 需要驱动 |
 | 反作弊风险 | 低 | 低 | 高 |
-| 实现优先级 | **P0** (立即实现) | P1 (备用) | P2 (可选) |
-| 适用场景 | 普通程序/老游戏/2D游戏 | 前台自动化 | 高要求场景 |
+| 进入运行链路 | ✅ Runner 直接实例化 | — | — |
+| 适用场景 | 普通程序/老游戏/2D游戏 | 前台自动化（预留） | 高要求场景（预留） |
 
 ### 开发建议
 
-**阶段 1**: 只实现 `PostMessageBackend`
-- 已确认可用，先让核心功能跑通
-- 其他后端作为接口预留，阶段 4 再补充
-
-**阶段 4**: 补充 `SendInputBackend`
-- 作为 PostMessage 的补充方案
-- 给用户提供切换选项
-
-**阶段 6+**: 按需添加驱动级或其他方案
-- 根据用户反馈决定是否需要
-
+- **当前**: 仅 `PostMessageBackend` 一种实现，由 `Runner` 直接实例化
+- **后续补充 `SendInputBackend` 时**：
+  1. 新建 `src/input/send_input.rs`，实现 `InputBackend` 全部方法
+  2. 在 `InputManager::new()` 注册
+  3. 改造 `Runner` 改为从 `InputManager` 取后端，并接通 UI 切换入口
+- **驱动级**: 按需评估，复杂度高，暂不排期
