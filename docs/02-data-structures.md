@@ -408,7 +408,7 @@ pub struct GeneralConfig {
 
 ## 7. 主应用状态 (App)
 
-**位置**: `src/app.rs`
+**位置**: `src/app/mod.rs`（App 结构体、`new`、配置读写与 `update` 编排；各业务方法分见 `app/` 下 `events` / `slots` / `overlay` / `voice_ctrl` / `wakeword_train` / `grab` / `ui` 子模块）
 
 > 旧设计里的 `AutoKeyboardApp` 已重命名为 `App`。它不再持有 `SchemeManager` / `ExecutorManager` / `InputManager`：脚本池直接以 `Vec<ScriptFile>` 形式存放；每个槽位自带 `Option<Runner>`（见 §1.2、§5），不再有独立的执行器管理器。
 

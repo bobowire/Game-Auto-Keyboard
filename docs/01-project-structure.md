@@ -31,7 +31,19 @@ game-auto-keyboard/
 └── src/
     ├── main.rs                 # 程序入口
     ├── lib.rs                  # 模块声明与常用类型重导出
-    ├── app.rs                  # 主应用状态机 + egui UI（App）
+    ├── app/                    # 主应用（App 状态机 + UI + 各业务子系统）
+    │   ├── mod.rs              #   App 结构体、构造、配置读写、eframe::App::update 编排
+    │   ├── events.rs           #   事件分发枢纽（dispatch / hotkey / tray / apply_action）
+    │   ├── slots.rs            #   槽位/窗口执行（Runner 启停与批量调度）
+    │   ├── overlay.rs          #   鼠标转发覆盖窗开启/关闭/事件处理
+    │   ├── voice_ctrl.rs       #   语音编排（启停 / 意图解析 / 脚本匹配执行）
+    │   ├── wakeword_train.rs   #   唤醒词训练（录音 → 裁剪静音 → 训练模型）
+    │   ├── grab.rs             #   抓取窗口 / 取色倒计时
+    │   └── ui/                 #   egui 界面渲染
+    │       ├── mod.rs          #     状态栏/源码面板/设置窗口外壳/中央面板编排
+    │       ├── slot.rs         #     单槽位卡片 UI
+    │       ├── settings.rs     #     设置窗口各标签页（通用/语音/转发/热键/关于）
+    │       └── guides.rs       #     帮助/引导弹窗（语音帮助/百度/唤醒词）
     ├── config.rs               # 配置持久化（方案绑定，不存运行时 HWND）
     ├── runner.rs               # 执行引擎（Runner，单窗口执行线程）
     ├── window_slot.rs          # 窗口槽位与方案（WindowSlot / Scheme）
@@ -92,7 +104,7 @@ game-auto-keyboard/
 |------|------|------|
 | `main.rs` | 程序入口，初始化 eframe 应用 | `app`, `utils` |
 | `lib.rs` | 声明所有子模块，重导出常用类型 | 所有模块 |
-| `app.rs` | 主应用状态，协调各模块，承载 egui UI | 所有模块 |
+| `app/` | App 状态机 + UI + 业务子系统编排（结构体与 `update` 在 `app/mod.rs`，实现分见各子模块） | 所有模块 |
 
 ### 功能模块
 

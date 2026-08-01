@@ -1,6 +1,6 @@
 # UI 设计
 
-> 本文描述的是 egui 0.29 即时模式 GUI 的实际实现。全部 UI 代码集中在 `src/app.rs`（约 2300+ 行），**没有独立的 `src/ui/` 目录**。槽位数据结构在 `src/window_slot.rs`，取色器在 `src/color_picker.rs`，鼠标转发覆盖窗在 `src/overlay.rs`。
+> 本文描述的是 egui 0.29 即时模式 GUI 的实际实现。UI 代码位于 `src/app/ui/` 目录（由原 `app.rs` 拆分而来），由 `src/app/mod.rs` 中 `impl eframe::App` 的 `update` 统一编排。下文各处「位置」标注为旧 `app.rs` 的近似行号，实际代码已按职责拆到 `app/ui/` 的 `mod.rs` / `slot.rs` / `settings.rs` / `guides.rs`。槽位数据结构在 `src/window_slot.rs`，取色器在 `src/color_picker.rs`，鼠标转发覆盖窗在 `src/overlay.rs`。
 
 ## 整体布局
 
