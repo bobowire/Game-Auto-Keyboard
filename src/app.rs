@@ -906,6 +906,34 @@ impl App {
                 self.hotkey_sm.on_insert();
                 self.status = "🎯 发送模式已激活（2秒内按任意键发送）".to_string();
             }
+            // 语音开关切换（Ctrl+Shift+F1）：开=成功音，关=失败音（开启失败也播失败音）
+            HotkeyKey::FKey(1) => {
+                if self.voice.is_some() {
+                    self.stop_voice();
+                    play_sound("beep_fail.wav");
+                } else {
+                    self.start_voice();
+                    if self.voice.is_some() {
+                        play_sound("beep_success.wav");
+                    } else {
+                        play_sound("beep_fail.wav");
+                    }
+                }
+            }
+            // 消息转发开关切换（Ctrl+Shift+F2）：同上
+            HotkeyKey::FKey(2) => {
+                if self.overlay.is_some() {
+                    self.stop_overlay();
+                    play_sound("beep_fail.wav");
+                } else {
+                    self.start_overlay();
+                    if self.overlay.is_some() {
+                        play_sound("beep_success.wav");
+                    } else {
+                        play_sound("beep_fail.wav");
+                    }
+                }
+            }
             _ => {
                 // 其他键在非发送模式下忽略
             }
@@ -1455,6 +1483,23 @@ impl App {
                         });
                     });
 
+                    ui.add_space(8.0);
+
+                    // 场景6：快捷开关
+                    ui.collapsing("🎚 场景六：语音/转发快捷开关", |ui| {
+                        ui.label("用热键快速开关语音控制或消息转发，无需切回主窗口点按钮。");
+                        ui.add_space(4.0);
+                        ui.label("• 语音开关：Ctrl+Shift+F1");
+                        ui.label("• 转发开关：Ctrl+Shift+F2");
+                        ui.label("• 开启播成功音、关闭播失败音；开启失败（如缺密钥/未标记主窗口）也播失败音");
+                        ui.add_space(4.0);
+                        ui.group(|ui| {
+                            ui.label(egui::RichText::new("注意：").strong());
+                            ui.label("• 这两个热键也受「启用热键」总开关控制");
+                            ui.label("• 即兴发送模式下 F1/F2 会被当作要发送的按键，不触发开关");
+                        });
+                    });
+
                     ui.add_space(12.0);
 
                     // 小贴士
@@ -1717,11 +1762,20 @@ impl App {
                     ui.checkbox(&mut self.hotkey_impromptu_enabled, "");
                 });
                 ui.end_row();
+
+                ui.label("语音开关");
+                ui.monospace("Ctrl+Shift+F1");
+                ui.end_row();
+
+                ui.label("转发开关");
+                ui.monospace("Ctrl+Shift+F2");
+                ui.end_row();
             });
 
         ui.add_space(8.0);
         ui.label("💡 提示：");
         ui.label("• 即兴发送：按 Ctrl+Shift+Insert 进入发送模式，2秒内按任意支持的键");
+        ui.label("• Ctrl+Shift+F1/F2 切换语音/转发，开启播成功音、关闭播失败音");
         ui.label("• 热键仅在程序运行时生效，关闭后自动注销");
         ui.label("• 点击右上角「❓ 热键说明」查看详细使用指南");
     }
