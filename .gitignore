@@ -35,3 +35,9 @@ Desktop.ini
 /sendvoice/
 command_*.wav
 config.json
+
+# Claude Code（个人权限/会话状态，不入库）
+/.claude/
+
+# 构建/部署运行时目录（exe + assets + scripts + config.json，由构建脚本生成）
+/GameAutoKeyboard/
