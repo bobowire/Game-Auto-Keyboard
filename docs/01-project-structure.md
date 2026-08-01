@@ -58,7 +58,7 @@ game-auto-keyboard/
     │   └── state_machine.rs    # 状态机（1-8前缀选择逻辑）
     │
     ├── input/                  # 输入后端模块
-    │   ├── mod.rs              # InputManager（多后端脚手架，死代码）
+    │   ├── mod.rs              # 模块入口与类型重导出（InputBackend / PostMessageBackend / keymap）
     │   ├── backend.rs          # InputBackend trait
     │   ├── post_message.rs     # PostMessage 实现（唯一实际后端）
     │   └── keymap.rs           # 按键名 ↔ VK 码 / 鼠标按钮解析
@@ -126,8 +126,7 @@ game-auto-keyboard/
 
 ### 关于输入后端的说明
 
-`input` 模块用 `InputBackend` trait 抽象输入策略，`InputManager` 预留了多后端运行时切换（`switch_backend`）。
-但当前**唯一实际实现是 `PostMessageBackend`**（后台发送）。
+`input` 模块用 `InputBackend` trait 抽象输入策略，当前唯一实现是 `PostMessageBackend`（`Runner` / `overlay` / `app` 直接实例化，无管理器；早期预留的 `InputManager` 已作为死代码移除）。
 设计文档最初设想的 SendInput 前端后端为**设计预留、未实现**，对应文件（`send_input.rs`）并不存在。
 
 ## 模块间依赖关系

@@ -4,7 +4,7 @@
 
 使用 **策略模式 (Strategy Pattern)** 通过 trait 抽象输入方式，核心优势：
 
-1. **可插拔**: 后端切换的扩展点已经预留（`InputManager`），但目前未接线
+1. **可插拔**: `InputBackend` trait 是后端切换的扩展点（早期预留的 `InputManager` 管理器已作为死代码移除，trait 抽象保留）
 2. **可扩展**: 新增后端只需实现 `InputBackend` trait
 3. **可测试**: 可以 mock 后端进行单元测试
 4. **解耦**: 脚本执行器不关心具体实现细节
@@ -15,7 +15,7 @@
 - **SendInput**: 前台发送（**设计预留，代码未实现**，无 `src/input/send_input.rs`）
 - **驱动级**: 内核驱动（纯接口构想，未实现）
 
-> 现状提示：尽管 trait 设计为可切换，实际运行时只有 `PostMessageBackend` 一种实现，且由 `Runner` 直接 `new` 出来使用，`InputManager` 并未参与运行链路（详见下文“输入管理器”一节）。
+> 现状提示：trait 设计为可切换，但实际运行时只有 `PostMessageBackend` 一种实现，由 `Runner` / `overlay` / `app` 直接 `new` 使用，无后端管理器（早期预留的 `InputManager` 已移除，详见下文「输入管理器」一节）。
 
 ## 核心 Trait
 
@@ -26,7 +26,7 @@
 **为什么要抽象成 trait？**
 
 1. **隔离变化点**: Windows 输入 API 有多种方式（PostMessage、SendInput、驱动），未来可能还有新方案
-2. **预留切换能力**: `InputManager` 已为运行时切换留好接口（即便当前未接线）
+2. **预留切换能力**: `InputBackend` trait 为运行时切换留好接口（管理器 `InputManager` 已移除，需要时重新引入即可）
 3. **渐进式开发**: 先实现 PostMessage，后续再补充其他方案
 4. **单元测试**: 可以创建 `MockBackend` 进行测试，不依赖真实窗口
 
@@ -318,38 +318,15 @@ fn execute_command(&self, cmd: &Command) -> Result<(), String> {
 
 ---
 
-## 输入管理器（已定义但未接线）
+## 输入管理器（已移除）
 
-**位置**: `src/input/mod.rs`
+**历史**：早期曾定义 `InputManager`（管理多后端注册与运行时切换）作为 ADR-001 的扩展点，但从未接入运行链路——`Runner`、`overlay`、`app` 均直接 `PostMessageBackend::new()`。作为死代码已于 2026-08 移除，`src/lib.rs` 的重导出同步删除。
 
-`InputManager` 设计为本应负责后端注册与切换的管理者，但**当前是死代码**：
+`InputBackend` trait 抽象保留（`ScriptExecutor` / `overlay` 仍以 trait 接收后端）。若未来需要运行时切换后端，重新引入一个管理器即可，trait 接口不变。
 
-- 结构体和方法都已定义（`current` / `available` / `switch_backend` / `available_backends`）
-- 在 `src/lib.rs` 中被 re-export
-- 但**全项目没有任何地方实例化它**（`InputManager::new()` 没有被调用）
+### 真实运行链路
 
-```rust
-pub struct InputManager {
-    current: Arc<dyn InputBackend>,
-    available: Vec<Arc<dyn InputBackend>>,
-}
-
-impl InputManager {
-    pub fn new() -> Self {
-        // 即便被调用，也只注册 PostMessageBackend 一种
-        let backends: Vec<Arc<dyn InputBackend>> = vec![
-            Arc::new(PostMessageBackend::new()),
-        ];
-        let current = backends[0].clone();
-        Self { current, available: backends }
-    }
-    // current() / switch_backend() / available_backends() 略
-}
-```
-
-### 真实运行链路：绕过 InputManager
-
-实际运行时由 `Runner` 直接实例化后端，完全不经过 `InputManager`：
+实际运行时由 `Runner` 直接实例化后端：
 
 **位置**: `src/runner.rs`
 
@@ -375,9 +352,7 @@ fn spawn(hwnd_raw: isize, commands: Vec<Command>, once: bool, initial_delay_ms: 
 }
 ```
 
-此外 `src/app.rs` 和 `src/overlay.rs`（鼠标转发覆盖窗）也各自直接 `PostMessageBackend::new()`。
-
-> 小结：`InputManager` 是为“运行时切换后端 / UI 下拉选择后端”预留的扩展点。在 `SendInputBackend` 等其他后端落地之前，它不会进入运行链路。
+此外 `src/app/events.rs`（即兴发送）和 `src/overlay.rs`（鼠标转发覆盖窗）也各自直接 `PostMessageBackend::new()`。
 
 ---
 
@@ -457,28 +432,23 @@ impl InputBackend for AhkBackend {
 }
 ```
 
-#### 2. 在 `src/input/mod.rs` 中注册
+#### 2. 接入运行链路
 
-把新后端加入 `InputManager::new()` 的列表（同时建议在 `Runner::spawn` 增加后端选择参数，让 `InputManager` 真正进入运行链路）：
+> 注：早期版本在 `src/input/mod.rs` 提供 `InputManager` 管理多后端注册，已于 2026-08 作为死代码移除。新后端无需注册步骤，直接在调用处实例化即可；若需要运行时切换，再重新引入一个管理器。
+
+目前 `Runner` / `overlay` / `app` 都直接 `PostMessageBackend::new()`。接入新后端最简做法是给 `Runner::spawn`（及即兴发送、overlay 启动处）加一个后端选择参数：
 
 ```rust
-mod ahk_backend;
-use ahk_backend::AhkBackend;
-
-impl InputManager {
-    pub fn new() -> Self {
-        let backends: Vec<Arc<dyn InputBackend>> = vec![
-            Arc::new(PostMessageBackend::new()),
-            Arc::new(AhkBackend::new()),   // ← 新增
-        ];
-        // ...
-    }
-}
+// Runner::spawn 增加参数，按需 new 对应后端
+let backend: Arc<dyn InputBackend> = match backend_kind {
+    BackendKind::PostMessage => Arc::new(PostMessageBackend::new()),
+    BackendKind::Ahk => Arc::new(AhkBackend::new()),   // ← 新增
+};
 ```
 
-#### 3. 让 Runner 真正使用 InputManager（当前未做）
+#### 3. 接通 UI 切换入口（当前未做）
 
-目前 `Runner` 是写死 `PostMessageBackend::new()` 的。要让新后端生效，需要改成从 `InputManager` 取当前后端，并接通 UI 切换入口。
+有了后端选择参数后，在设置窗口加一个下拉选择，把用户选择传给 `Runner::spawn` 即可。
 
 ---
 
@@ -518,9 +488,9 @@ impl InputManager {
 
 ### 开发建议
 
-- **当前**: 仅 `PostMessageBackend` 一种实现，由 `Runner` 直接实例化
+- **当前**: 仅 `PostMessageBackend` 一种实现，由 `Runner` / `overlay` / `app` 直接实例化，无后端管理器
 - **后续补充 `SendInputBackend` 时**：
   1. 新建 `src/input/send_input.rs`，实现 `InputBackend` 全部方法
-  2. 在 `InputManager::new()` 注册
-  3. 改造 `Runner` 改为从 `InputManager` 取后端，并接通 UI 切换入口
+  2. 给 `Runner::spawn`（及 overlay / 即兴发送处）加后端选择参数；若需运行时切换，再重新引入后端管理器（原 `InputManager` 已移除）
+  3. 接通 UI 切换入口
 - **驱动级**: 按需评估，复杂度高，暂不排期

@@ -14,7 +14,7 @@ pub mod voice;
 pub mod app;
 
 // 重新导出常用类型
-pub use input::{InputManager, InputBackend, PostMessageBackend, MouseButton};
+pub use input::{InputBackend, PostMessageBackend, MouseButton};
 pub use script::{Parser, ScriptExecutor, Command, ScriptFile, load_dir};
 pub use runner::Runner;
 pub use event_bus::{EventSender, MainEvent, MainEventBus, WakeTicker};

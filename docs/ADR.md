@@ -43,7 +43,7 @@ pub trait InputBackend: Send + Sync {
 #### 阶段 1（立即）
 - 定义 `InputBackend` trait
 - 实现 `PostMessageBackend`（✅ 已验证可用）
-- 创建 `InputManager` 管理后端切换
+- 创建 `InputManager` 管理后端切换（⚠ 已于 2026-08 作为死代码移除，trait 抽象保留）
 
 #### 阶段 4（备用）
 - 实现 `SendInputBackend`（前台方案）

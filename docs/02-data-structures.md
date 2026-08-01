@@ -475,7 +475,7 @@ pub struct App {
 
 - 配置项在 App 里以独立 bool/String 字段镜像存放（供 egui 直接可变借用编辑）；保存时由 `save_config()` 重新组装回 `AppConfig`
 - 输入后端：`Runner` 内部直接 `PostMessageBackend::new()`，不走任何管理器
-- `InputManager`（定义于 `src/input/mod.rs`，含多后端切换能力）目前**预留 / 未接线**到 App；当前唯一后端是 `PostMessageBackend`（基于 `PostMessage` 的后台发送），`SendInput` 这类前台注入后端尚未实现
+- 输入后端：`Runner` / `overlay` / `app` 直接 `PostMessageBackend::new()`，无后端管理器（早期预留的 `InputManager` 已作为死代码移除）；`SendInput` 这类前台注入后端尚未实现
 
 ---
 
