@@ -91,7 +91,9 @@ Windows 对鼠标消息有两套投递规则：
 | `WM_*BUTTONDBLCLK` | 同名消息原样 | 依赖 `CS_DBLCLKS` |
 | `WM_MOUSEWHEEL/HWHEEL` | 同名消息原样 | 焦点在覆盖窗时由 OS 直接送达；wParam 的 delta+MK 位、lParam 屏幕坐标都由 OS 组好 |
 | `WM_CLOSE` | **吞掉** | 覆盖窗持焦时 Alt+F4 不应销毁它（只能由开关/主窗口关闭来停） |
-| `WM_KEYDOWN`（VK_Q） | 不转发，本地消费 | Ctrl+Q → 回报 `CloseRequested`，UI 侧关闭转发；Ctrl 状态用 `GetKeyState` 取，lParam bit30 排除长按重键 |
+| `WM_KEYDOWN`（Ctrl+Q） | 不转发，本地消费 | Ctrl+Q → 回报 `CloseRequested`，UI 侧关闭转发；Ctrl 状态用 `GetKeyState` 取，lParam bit30 排除长按重键。记下被消费的 VK，其 `WM_KEYUP` 也抑制（避免目标收到"未按下的按键弹起"）；Ctrl 自身的 down/up 仍转发 |
+| `WM_KEYDOWN` / `WM_KEYUP` | `keyboard_broadcast` 开时转发 | wParam(VK)/lParam(扫描码+标志位) 原样投递；`keyboard_marked_only` 开时只发主窗口，否则广播全部（与 `send_key_down/up` 同路线） |
+| `WM_SYSKEYDOWN` / `WM_SYSKEYUP` | `keyboard_broadcast` 开时转发 | Alt 组合 / F10 等；覆盖窗返回 0 自行消费，不触发系统菜单（popup 无菜单） |
 | `WM_ACTIVATE`（激活） | 给**所有目标窗口**补发 `WM_ACTIVATE(1)` + `WM_SETFOCUS` | 复用 `PostMessageBackend::send_window_active`（脚本 `send_window_active()` 同款）；很多游戏只在内部"激活态"为真时接受输入 |
 
 ### 右键拖视角的特殊处理（防反馈环）
@@ -106,11 +108,27 @@ Windows 对鼠标消息有两套投递规则：
 
 > 前提：游戏的回拉目标是右键按下点。若某游戏回拉到窗口中心，P 对不上、过滤失效，需改用"距上一帧位移超阈值即为回拉"的通用判据。
 
-### 键盘（预留）
+### 键盘转发
 
-覆盖窗持有焦点时键盘消息（`WM_KEYDOWN/UP`）同样送达本窗口。目前只消费了一个快捷键：**Ctrl+Q 关闭转发**（覆盖窗线程回报 `OverlayEvent::CloseRequested`，UI 侧执行 stop）。其余按键忽略；后续若需要全量键盘转发，可直接用项目已有的 PostMessage 发键机制（`send_key_down/up`，已验证）。
+覆盖窗持有焦点时键盘消息（`WM_KEYDOWN/UP`、`WM_SYSKEYDOWN/UP`）同样送达本窗口，受 `ForwardConfig` 三个开关控制（见下「转发配置」）：
+
+- **Ctrl+Q** 仍为本地关闭快捷键，**不转发**；其 `WM_KEYUP` 也被抑制，避免目标窗口按键状态悬挂；Ctrl 自身的 down/up 照常转发。
+- 其余按键在 `keyboard_broadcast` 开启时原样转发（wParam=VK、lParam=扫描码+标志位，与脚本 `send_key_down/up` 同一路线，已验证）。
+- **不调用 `TranslateMessage`**：不生成也不转发 `WM_CHAR/WM_SYSCHAR/WM_DEADCHAR`。理由：现有脚本按键只发 `WM_KEYDOWN/UP` 即可被目标游戏读取；转发 WM_CHAR 有重复输入风险。若目标聊天框需要字符输入，后续可在此处加 `TranslateMessage` 并转发 WM_CHAR。
 
 > 选 Ctrl+Q 而非 Esc 系组合的原因：Esc 单按易误触，Ctrl+Esc / Alt+Esc 都是 Windows 系统级快捷键（开始菜单 / 窗口切换），系统会拦截、覆盖窗收不到，且会抢走焦点。Ctrl+Q 无系统冲突、语义直观。
+
+### 转发配置（ForwardConfig）
+
+新增于设置窗口「🖱 转发」标签页（`config.rs::ForwardConfig`，持久化到 `config.json` 的 `forward` 段，旧配置缺失字段走默认）：
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `rbutton_broadcast_move` | false | 右键按下时是否广播 `WM_MOUSEMOVE`。关 = 右键拖动期间不向任何窗口转发移动（规避右键拖视角反馈环）；右键的 DOWN/UP 仍转发。⚠️ 默认关，相比旧版「总是广播移动」是行为变化 |
+| `keyboard_broadcast` | false | 是否转发键盘消息（覆盖窗持焦期间的按键） |
+| `keyboard_marked_only` | false | 键盘是否只发给 ⚑ 主窗口（锚点）；false = 广播给全部绑定窗口。鼠标消息不受此开关影响 |
+
+> 目标窗口集合与配置均为**开启转发时的快照**：运行期改动配置或增删窗口绑定不会热更新，需关闭再开启「🖱 转发」刷新。
 
 ## 事件回报与生命周期
 
@@ -135,10 +153,10 @@ Windows 对鼠标消息有两套投递规则：
 - 独占全屏盖不过（仅窗口化/无边框有效）
 - 覆盖窗上是系统箭头，无法镜像游戏自绘光标（游戏内光标按转发坐标绘制正常）
 - 50ms 跟随有轻微拖影；均匀 50% 透明下文字也半透明
-- 覆盖窗持有焦点期间，键盘输入不会到达其他窗口（焦点模型使然；后续做键盘转发后即为功能）
+- 覆盖窗持有焦点期间，键盘输入默认不转发（焦点模型使然）；在「🖱 转发」设置开启 `keyboard_broadcast` 后才同步给目标窗口
 
 ## 未来演进（v2 可选）
 
 - `UpdateLayeredWindow` 每像素 alpha：膜透字不透
 - `SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE)` 替换定时器：跟随无拖影
-- 键盘消息转发：覆盖窗焦点期间的按键同步给目标窗口
+- WM_CHAR 转发：若目标聊天框需要字符输入，可在消息循环加 `TranslateMessage` 并转发 `WM_CHAR/WM_SYSCHAR`

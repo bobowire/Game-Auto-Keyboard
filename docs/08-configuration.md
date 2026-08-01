@@ -66,6 +66,11 @@ fn get_config_path() -> PathBuf {
     "save_wakeword_samples": false,
     "save_asr_audio": false,
     "pinyin_assist": false
+  },
+  "forward": {
+    "rbutton_broadcast_move": false,
+    "keyboard_broadcast": false,
+    "keyboard_marked_only": false
   }
 }
 ```
@@ -114,6 +119,14 @@ fn get_config_path() -> PathBuf {
 | `save_wakeword_samples` | `bool` | `false` | 唤醒词训练样本保存开关，启用后写入 `wakeword_samples` 目录 |
 | `save_asr_audio` | `bool` | `false` | ASR 音频保存开关，启用后将发送给 ASR 的音频保存到 `sendvoice` 目录 |
 | `pinyin_assist` | `bool` | `false` | 拼音辅助匹配开关，启用后在字符匹配之外再做一轮忽略声调的拼音匹配，取更优结果 |
+
+### ForwardConfig（鼠标转发覆盖窗）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `rbutton_broadcast_move` | `bool` | `false` | 右键按下时是否广播鼠标移动。关 = 右键拖动期间不向任何窗口转发 `WM_MOUSEMOVE`（规避右键拖视角反馈环）；右键按下/弹起仍转发。⚠️ 默认关，相比旧版「总是广播移动」是行为变化 |
+| `keyboard_broadcast` | `bool` | `false` | 键盘消息转发开关，启用后覆盖窗持焦期间的按键转发给目标窗口（Ctrl+Q 仍为关闭快捷键，不转发） |
+| `keyboard_marked_only` | `bool` | `false` | 键盘是否只发给 ⚑ 主窗口；`false` = 广播给全部绑定窗口。鼠标消息不受此开关影响 |
 
 ---
 

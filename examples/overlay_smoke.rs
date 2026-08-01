@@ -7,6 +7,7 @@
 use std::thread;
 use std::time::Duration;
 
+use game_auto_keyboard::config::ForwardConfig;
 use game_auto_keyboard::event_bus::{MainEvent, MainEventBus};
 use game_auto_keyboard::overlay::OverlayWindow;
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
@@ -24,7 +25,13 @@ fn main() {
     println!("目标窗口: {:?}", hwnd.0);
 
     let bus = MainEventBus::new();
-    let _overlay = match OverlayWindow::start(hwnd.0 as isize, vec![hwnd.0 as isize], bus.sender()) {
+    // 冒烟配置：右键移动广播开（验证鼠标移动转发），键盘转发关（冒烟不测键盘）
+    let cfg = ForwardConfig {
+        rbutton_broadcast_move: true,
+        keyboard_broadcast: false,
+        keyboard_marked_only: false,
+    };
+    let _overlay = match OverlayWindow::start(hwnd.0 as isize, vec![hwnd.0 as isize], cfg, bus.sender()) {
         Ok(o) => o,
         Err(e) => {
             println!("✗ 启动失败: {}", e);

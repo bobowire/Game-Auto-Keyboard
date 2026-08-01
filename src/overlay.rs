@@ -10,7 +10,8 @@
 // - 转发模式下覆盖窗理应持有焦点——点击覆盖窗即获焦，焦点跟着用户的点击走
 // - 滚轮消息（WM_MOUSEWHEEL）按 Windows 规则只送给焦点窗口：覆盖窗获焦后
 //   滚轮直接进入本窗口消息循环，原样转发即可，无需安装任何全局钩子
-// - 键盘消息同理送达本窗口，现阶段忽略，后续可扩展为转发给目标窗口
+// - 键盘消息同理送达本窗口：受 ForwardConfig 开关控制转发给目标窗口
+//   （Ctrl+Q 为本地关闭快捷键，不转发）；不调用 TranslateMessage，不转发 WM_CHAR
 //
 // 线程模型（照抄 hotkey/manager.rs 先例）：
 // - 覆盖窗活在独立线程的原生消息循环里（窗口必须在创建它的线程销毁）
@@ -41,13 +42,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos,
     ShowWindow, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HWND_TOPMOST, IDC_ARROW,
     LWA_ALPHA, MSG, PM_NOREMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WM_ACTIVATE, WM_CLOSE,
-    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_PAINT, WM_QUIT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_TIMER,
-    WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_PAINT, WM_QUIT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
+use crate::config::ForwardConfig;
 use crate::event_bus::{EventSender, MainEvent};
 use crate::input::{InputBackend, PostMessageBackend};
 
@@ -79,17 +81,19 @@ impl OverlayWindow {
     ///
     /// `anchor_raw`：主窗口句柄（isize），覆盖窗跟随它定位/显隐
     /// `targets_raw`：所有需接收鼠标消息的目标窗口句柄（isize，含主窗口）
+    /// `cfg`：消息转发配置（右键移动开关 / 键盘转发开关 / 键盘仅主窗口）
     /// `events`：事件总线发送端（用于回报 TargetLost）
     pub fn start(
         anchor_raw: isize,
         targets_raw: Vec<isize>,
+        cfg: ForwardConfig,
         events: EventSender,
     ) -> Result<Self, String> {
         let (ok_tx, ok_rx) = bounded::<Result<(), String>>(1);
         let (id_tx, id_rx) = bounded::<u32>(1);
         let handle = thread::Builder::new()
             .name("mouse-overlay".to_string())
-            .spawn(move || run_loop(anchor_raw, targets_raw, events, ok_tx, id_tx))
+            .spawn(move || run_loop(anchor_raw, targets_raw, cfg, events, ok_tx, id_tx))
             .map_err(|e| format!("启动覆盖窗线程失败: {}", e))?;
 
         // 线程保证在成功路径或失败路径都先报结果；id 在结果之前发送（两端都有缓冲）
@@ -133,6 +137,7 @@ impl Drop for OverlayWindow {
 fn run_loop(
     anchor_raw: isize,
     targets_raw: Vec<isize>,
+    cfg: ForwardConfig,
     events: EventSender,
     ok_tx: crossbeam_channel::Sender<Result<(), String>>,
     id_tx: crossbeam_channel::Sender<u32>,
@@ -220,6 +225,9 @@ fn run_loop(
             events: events.clone(),
             last_rect: RECT::default(),
             shown: false,
+            cfg,
+            rbutton_down: false,
+            consumed_vk: None,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -240,7 +248,8 @@ fn run_loop(
         let _ = id_tx.send(GetCurrentThreadId());
         let _ = ok_tx.send(Ok(()));
 
-        // 8. 消息循环（无键盘消息，免 TranslateMessage）
+        // 8. 消息循环（不调 TranslateMessage：键盘转发走 WM_KEYDOWN/UP/WM_SYS* 原样投递，
+        //    不生成也不转发 WM_CHAR，与脚本 send_key_down/up 同一路线）
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
             let _ = DispatchMessageW(&msg);
         }
@@ -263,6 +272,13 @@ struct WndState {
     events: EventSender,
     last_rect: RECT,
     shown: bool,
+    /// 消息转发配置（启动时快照）
+    cfg: ForwardConfig,
+    /// 右键当前是否处于按下状态（用于 rbutton_broadcast_move 判断）
+    rbutton_down: bool,
+    /// 被本地消费的按键 VK（Ctrl+Q 的 Q）：其后续 WM_KEYUP 也抑制，
+    /// 避免目标窗口收到“未按下的按键弹起”导致状态悬挂
+    consumed_vk: Option<u32>,
 }
 
 unsafe extern "system" fn overlay_wnd_proc(
@@ -296,13 +312,21 @@ unsafe extern "system" fn overlay_wnd_proc(
         // wParam/lParam 原样转发：OS 派发时 wParam 已带 MK_* 位；
         // WS_POPUP 无边框，客户区 == 窗口区，lParam 即目标客户区坐标
         WM_MOUSEMOVE => {
-            // 鼠标移动消息原样转发给所有目标窗口（不做任何过滤）
-            forward(&*ptr, msg, wparam, lparam);
+            // 右键按下且配置为不广播移动 → 吞掉（规避右键拖视角的反馈环）；
+            // 其余情况（未按右键，或开启广播）原样转发给所有目标窗口
+            let st = &*ptr;
+            if !st.rbutton_down || st.cfg.rbutton_broadcast_move {
+                forward(st, msg, wparam, lparam);
+            }
             LRESULT(0)
         }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
             // 捕获鼠标：拖拽时光标移出覆盖窗边界也不断流
             let _ = SetCapture(hwnd);
+            // 记录右键按下状态（供 WM_MOUSEMOVE 的广播判断）
+            if msg == WM_RBUTTONDOWN {
+                (&mut *ptr).rbutton_down = true;
+            }
             forward(&*ptr, msg, wparam, lparam);
             // XBUTTON 消息要求返回 TRUE，其余返回 0
             LRESULT(if msg == WM_XBUTTONDOWN { 1 } else { 0 })
@@ -310,6 +334,10 @@ unsafe extern "system" fn overlay_wnd_proc(
         WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP => {
             if GetCapture() == hwnd {
                 let _ = ReleaseCapture();
+            }
+            // 右键弹起 → 清除按下状态
+            if msg == WM_RBUTTONUP {
+                (&mut *ptr).rbutton_down = false;
             }
             forward(&*ptr, msg, wparam, lparam);
             LRESULT(if msg == WM_XBUTTONUP { 1 } else { 0 })
@@ -338,15 +366,45 @@ unsafe extern "system" fn overlay_wnd_proc(
             }
             LRESULT(0)
         }
-        // Ctrl+Q 关闭转发（Ctrl 是修饰键，用 GetKeyState 取当前按下态）；bit30 排除长按重键
+        // ===== 键盘消息转发 =====
+        // Ctrl+Q 关闭转发（本地消费，不转发）：Ctrl 是修饰键，用 GetKeyState 取当前
+        // 按下态；bit30 排除长按重键。记下被消费的 VK，其后续 WM_KEYUP 也抑制，
+        // 避免目标窗口收到“未按下的按键弹起”导致状态悬挂（Ctrl 自身的 down/up 仍转发）
         WM_KEYDOWN
             if wparam.0 as u32 == VK_Q.0 as u32
                 && GetKeyState(VK_CONTROL.0 as i32) < 0
                 && lparam.0 & (1 << 30) == 0 =>
         {
+            (&mut *ptr).consumed_vk = Some(VK_Q.0 as u32);
             (&*ptr)
                 .events
                 .send(MainEvent::Overlay(OverlayEvent::CloseRequested));
+            LRESULT(0)
+        }
+        // 其余 WM_KEYDOWN：开启键盘转发则原样转发（wParam=VK，lParam=扫描码+标志位）
+        WM_KEYDOWN => {
+            if (&*ptr).cfg.keyboard_broadcast {
+                forward_keyboard(&*ptr, msg, wparam, lparam);
+            }
+            LRESULT(0)
+        }
+        // WM_KEYUP：被消费按键的弹起抑制；否则按开关转发
+        WM_KEYUP => {
+            let st = &mut *ptr;
+            let vk = wparam.0 as u32;
+            if st.consumed_vk == Some(vk) {
+                st.consumed_vk = None;
+            } else if st.cfg.keyboard_broadcast {
+                forward_keyboard(st, msg, wparam, lparam);
+            }
+            LRESULT(0)
+        }
+        // Alt 组合 / F10 等（WM_SYS*）：开启键盘转发则原样转发；返回 0 自行消费，
+        // 不触发系统菜单（popup 无菜单）
+        WM_SYSKEYDOWN | WM_SYSKEYUP => {
+            if (&*ptr).cfg.keyboard_broadcast {
+                forward_keyboard(&*ptr, msg, wparam, lparam);
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -419,6 +477,19 @@ unsafe fn follow_tick(hwnd: HWND, st: &mut WndState) {
 unsafe fn forward(st: &WndState, msg: u32, wparam: WPARAM, lparam: LPARAM) {
     for &t in &st.targets {
         let _ = PostMessageW(t, msg, wparam, lparam);
+    }
+}
+
+/// 键盘消息转发：keyboard_marked_only 时只发给主窗口（⚑ 锚点），否则广播给全部目标。
+/// wParam(VK)/lParam(扫描码+标志位) 原样转发，与 PostMessageBackend::send_key_down/up
+/// 同一路线（src/input/post_message.rs）。
+unsafe fn forward_keyboard(st: &WndState, msg: u32, wparam: WPARAM, lparam: LPARAM) {
+    if st.cfg.keyboard_marked_only {
+        let _ = PostMessageW(st.target, msg, wparam, lparam);
+    } else {
+        for &t in &st.targets {
+            let _ = PostMessageW(t, msg, wparam, lparam);
+        }
     }
 }
 

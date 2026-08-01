@@ -1,7 +1,7 @@
 // egui 主应用 - 多窗口 + 方案标识 + 热键
 
 use crate::color_picker::ColorPicker;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, ForwardConfig};
 use crate::event_bus::{MainEvent, MainEventBus, WakeTicker};
 use crate::hotkey::{HotkeyAction, HotkeyKey, HotkeyManager, HotkeyStateMachine};
 use crate::overlay::{OverlayEvent, OverlayWindow};
@@ -113,6 +113,11 @@ pub struct App {
     save_asr_audio: bool,
     pinyin_assist: bool,
 
+    // 鼠标转发配置（编辑用），从 config 加载
+    forward_rbutton_move: bool,
+    forward_keyboard: bool,
+    forward_marked_only: bool,
+
     // 统一配置窗口
     show_settings: bool,
     settings_tab: SettingsTab,
@@ -150,6 +155,7 @@ struct WakewordTrainingState {
 enum SettingsTab {
     General,
     Voice,
+    Forward,
     Hotkey,
     About,
 }
@@ -261,6 +267,9 @@ impl App {
             save_wakeword_samples: config.general.save_wakeword_samples,
             save_asr_audio: config.general.save_asr_audio,
             pinyin_assist: config.general.pinyin_assist,
+            forward_rbutton_move: config.forward.rbutton_broadcast_move,
+            forward_keyboard: config.forward.keyboard_broadcast,
+            forward_marked_only: config.forward.keyboard_marked_only,
             show_settings: false,
             settings_tab: SettingsTab::General,
             show_voice_help: false,
@@ -305,6 +314,9 @@ impl App {
         cfg.general.save_wakeword_samples = self.save_wakeword_samples;
         cfg.general.save_asr_audio = self.save_asr_audio;
         cfg.general.pinyin_assist = self.pinyin_assist;
+        cfg.forward.rbutton_broadcast_move = self.forward_rbutton_move;
+        cfg.forward.keyboard_broadcast = self.forward_keyboard;
+        cfg.forward.keyboard_marked_only = self.forward_marked_only;
 
         // 同步日志开关到 vlog 模块
         vlog::set_enabled(self.log_enabled);
@@ -502,7 +514,12 @@ impl App {
             .filter(|&h| win32::is_valid(windows::Win32::Foundation::HWND(h as *mut _)))
             .collect();
         let n = targets.len();
-        match OverlayWindow::start(anchor_raw, targets, self.events.sender()) {
+        let cfg = ForwardConfig {
+            rbutton_broadcast_move: self.forward_rbutton_move,
+            keyboard_broadcast: self.forward_keyboard,
+            keyboard_marked_only: self.forward_marked_only,
+        };
+        match OverlayWindow::start(anchor_raw, targets, cfg, self.events.sender()) {
             Ok(o) => {
                 self.overlay = Some(o);
                 self.status = format!(
@@ -1475,6 +1492,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "🔧 通用");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::Voice, "🎤 语音控制");
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::Forward, "🖱 转发");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::Hotkey, "⌨️ 热键配置");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::About, "ℹ️ 关于");
                 });
@@ -1483,6 +1501,7 @@ impl App {
                 match self.settings_tab {
                     SettingsTab::General => self.ui_settings_general(ui, &mut act_save),
                     SettingsTab::Voice => self.ui_settings_voice(ui, &mut act_save),
+                    SettingsTab::Forward => self.ui_settings_forward(ui, &mut act_save),
                     SettingsTab::Hotkey => self.ui_settings_hotkey(ui, &mut act_save),
                     SettingsTab::About => self.ui_settings_about(ui),
                 }
@@ -1538,6 +1557,38 @@ impl App {
         ui.add_space(2.0);
         ui.label("开启后，将发送给百度 ASR 的音频保存到 sendvoice/ 目录");
         ui.label("关闭后，不保存音频文件（默认）");
+    }
+
+    /// 鼠标转发配置标签页
+    fn ui_settings_forward(&mut self, ui: &mut egui::Ui, _act_save: &mut bool) {
+        ui.label(egui::RichText::new("鼠标移动转发").strong());
+        ui.add_space(4.0);
+
+        ui.checkbox(&mut self.forward_rbutton_move, "右键按下时广播鼠标移动");
+        ui.add_space(2.0);
+        ui.label("关闭后，按住右键拖动期间不向任何窗口转发鼠标移动");
+        ui.label("（用于规避右键拖视角的反馈环；右键的按下/弹起仍正常转发）");
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("键盘消息转发").strong());
+        ui.add_space(4.0);
+
+        ui.checkbox(&mut self.forward_keyboard, "转发键盘消息");
+        ui.add_space(2.0);
+        ui.label("开启后，覆盖窗持焦时按键转发给目标窗口");
+        ui.label("Ctrl+Q 仍为关闭转发的快捷键，不会被转发");
+
+        ui.add_space(8.0);
+        ui.checkbox(&mut self.forward_marked_only, "键盘只发给主窗口（⚑）");
+        ui.add_space(2.0);
+        ui.label("开启后键盘只发给 ⚑ 标记的主窗口；关闭则广播给所有绑定窗口");
+        ui.label("（鼠标消息不受此开关影响，始终广播给全部绑定窗口）");
+
+        ui.add_space(8.0);
+        ui.colored_label(
+            egui::Color32::from_rgb(120, 120, 120),
+            "💡 改动保存后，需关闭并重新打开「🖱 转发」开关才生效（目标窗口集合为开启时的快照）",
+        );
     }
 
     /// 语音配置标签页

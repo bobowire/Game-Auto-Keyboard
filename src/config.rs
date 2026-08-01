@@ -57,6 +57,34 @@ pub struct HotkeyConfig {
     pub impromptu_enabled: bool,
 }
 
+/// 鼠标转发覆盖窗的消息转发配置
+///
+/// 三个开关默认全关（`#[serde(default)]`，旧 config.json 缺失字段走 false）。
+/// 注意：`rbutton_broadcast_move` 默认关意味着右键拖动期间默认不广播移动
+/// （仅右键按下期间抑制 WM_MOUSEMOVE；右键的按下/弹起仍照常转发）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ForwardConfig {
+    /// 右键按下时是否广播鼠标移动消息（关 = 右键拖动期间不广播移动，规避视角反馈环）
+    #[serde(default)]
+    pub rbutton_broadcast_move: bool,
+    /// 是否广播键盘消息（覆盖窗焦点期间的按键转发给目标窗口）
+    #[serde(default)]
+    pub keyboard_broadcast: bool,
+    /// 键盘消息是否只广播给标记（主窗口）窗口；false = 广播给全部绑定窗口
+    #[serde(default)]
+    pub keyboard_marked_only: bool,
+}
+
+impl Default for ForwardConfig {
+    fn default() -> Self {
+        Self {
+            rbutton_broadcast_move: false,
+            keyboard_broadcast: false,
+            keyboard_marked_only: false,
+        }
+    }
+}
+
 /// 通用配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralConfig {
@@ -113,6 +141,9 @@ pub struct AppConfig {
     /// 通用配置
     #[serde(default)]
     pub general: GeneralConfig,
+    /// 鼠标转发配置
+    #[serde(default)]
+    pub forward: ForwardConfig,
 }
 
 impl Default for AppConfig {
@@ -122,6 +153,7 @@ impl Default for AppConfig {
             baidu: BaiduConfig::default(),
             hotkey: HotkeyConfig::default(),
             general: GeneralConfig::default(),
+            forward: ForwardConfig::default(),
         }
     }
 }
@@ -224,6 +256,27 @@ mod tests {
         let s = serde_json::to_string(&cfg).unwrap();
         let back: GeneralConfig = serde_json::from_str(&s).unwrap();
         assert!(back.pinyin_assist);
+    }
+
+    #[test]
+    fn forward_config_default_and_roundtrip() {
+        // 旧配置（无 forward 段）应反序列化为全 false（#[serde(default)]）
+        let old = serde_json::from_str::<AppConfig>(r#"{"slots":[]}"#).unwrap();
+        assert!(!old.forward.rbutton_broadcast_move);
+        assert!(!old.forward.keyboard_broadcast);
+        assert!(!old.forward.keyboard_marked_only);
+
+        // 往返序列化应保留 true
+        let cfg = ForwardConfig {
+            rbutton_broadcast_move: true,
+            keyboard_broadcast: true,
+            keyboard_marked_only: false,
+        };
+        let s = serde_json::to_string(&cfg).unwrap();
+        let back: ForwardConfig = serde_json::from_str(&s).unwrap();
+        assert!(back.rbutton_broadcast_move);
+        assert!(back.keyboard_broadcast);
+        assert!(!back.keyboard_marked_only);
     }
 
     #[test]
