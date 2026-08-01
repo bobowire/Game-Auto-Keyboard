@@ -10,8 +10,10 @@ fn main() {
     let (year, month, day) = unix_days_to_date(days);
 
     let build_date = format!("{:04}{:02}{:02}", year, month, day);
+    // 不输出 cargo:rerun-if-changed=build.rs：那条指令会把 build script 限制为仅在
+    // build.rs 自身变化时重跑，导致即使源码改了 BUILD_DATE 也不刷新。保留 Cargo 默认
+    // 行为（包内任意文件变化即重跑 build script），保证每次重新编译都更新为当天日期。
     println!("cargo:rustc-env=BUILD_DATE={}", build_date);
-    println!("cargo:rerun-if-changed=build.rs");
 
     #[cfg(target_os = "windows")]
     {
